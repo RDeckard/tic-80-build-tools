@@ -1,0 +1,114 @@
+#!/usr/bin/env ruby
+
+require 'fileutils'
+require 'time'
+
+# --- CONSTANTS ---
+LOAD_FILE = 'load.rb'.freeze
+BUILD_DIR = 'builds'.freeze
+HEADER_KEYS = [
+  '# title:',
+  '# author:',
+  '# desc:',
+  '# site:',
+  '# license:',
+  '# version:'
+].freeze
+SCRIPT_TAG = '# script:  ruby'.freeze
+ASSET_REGEX = /^# <[A-Z]+>/.freeze
+REQUIRE_REGEX = /^\s*require_relative\s+['"]([^'"]+)['"]\s*$/.freeze
+
+# --- HELPERS ---
+def error_exit(message)
+  puts "💥 \e[31mError: #{message}\e[0m"
+  exit 1
+end
+
+def success_exit(message)
+  puts "✅ \e[32m#{message}\e[0m"
+  exit 0
+end
+
+# --- VALIDATION ---
+def validate_master_file(path, lines)
+  puts "🔎 Validating master file: #{path}"
+  error_exit("Master file must have at least 7 lines for the header.") if lines.count < 7
+
+  HEADER_KEYS.each_with_index do |key, i|
+    error_exit("Invalid header. Line #{i + 1} should start with '#{key}'.") unless lines[i].strip.start_with?(key)
+  end
+
+  error_exit("Invalid header. Line 7 should be '#{SCRIPT_TAG}'.") unless lines[6].strip == SCRIPT_TAG
+  puts "   - Header is valid."
+end
+
+def parse_load_file
+  error_exit("'#{LOAD_FILE}' not found in the current directory.") unless File.exist?(LOAD_FILE)
+  puts "🔎 Parsing '#{LOAD_FILE}'..."
+
+  required_files = File.readlines(LOAD_FILE).map do |line|
+    match = line.match(REQUIRE_REGEX)
+    match ? match[1] : nil
+  end.compact
+
+  error_exit("'#{LOAD_FILE}' contains no valid require_relative statements.") if required_files.empty?
+
+  duplicates = required_files.select { |e| required_files.count(e) > 1 }.uniq
+  error_exit("Duplicate entries found in '#{LOAD_FILE}': #{duplicates.join(', ')}") unless duplicates.empty?
+
+  required_files.each do |file|
+    error_exit("Required file not found: #{file}") unless File.exist?(file)
+  end
+
+  puts "   - Found #{required_files.count} files to load."
+  required_files
+end
+
+# --- MAIN LOGIC ---
+# 1. Check arguments
+master_file_path = ARGV.first
+error_exit("Usage: ./bin/build <master_file_path>") unless master_file_path
+error_exit("Master file not found: #{master_file_path}") unless File.exist?(master_file_path)
+
+# 2. Read and validate master file
+master_lines = File.readlines(master_file_path)
+validate_master_file(master_file_path, master_lines)
+
+# 3. Parse load.rb
+required_files = parse_load_file
+
+# 4. Separate master file sections
+puts "🔪 Slicing master file into sections..."
+asset_start_index = master_lines.index { |line| line.match?(ASSET_REGEX) }
+error_exit("No asset section (e.g., # <TILES>) found in master file.") unless asset_start_index
+
+header_section = master_lines[0..6].join
+master_code_section = master_lines[7...asset_start_index].join
+assets_section = master_lines[asset_start_index..-1].join
+puts "   - Sections separated successfully."
+
+# 5. Concatenate required files
+puts "📦 Concatenating required files..."
+injected_code = required_files.map do |file|
+  "\n# --- #{file} ---\n" + File.read(file)
+end.join
+
+# 6. Assemble final content
+final_content = [
+  header_section,
+  injected_code,
+  "\n# ------\n",
+  master_code_section,
+  assets_section
+].join
+
+# 7. Write output file
+puts "📝 Writing final build file..."
+FileUtils.mkdir_p(BUILD_DIR)
+timestamp = Time.now.strftime('%Y-%m-%d-%H%M%S')
+master_basename = File.basename(master_file_path, '.rb')
+output_path = File.join(BUILD_DIR, "#{master_basename}-#{timestamp}.rb")
+
+File.write(output_path, final_content)
+
+success_exit("Build successful! Output at: #{output_path}")

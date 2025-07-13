@@ -3,20 +3,26 @@
 require 'fileutils'
 require 'time'
 
-# --- CONSTANTS ---
-LOAD_FILE = 'load.rb'.freeze
+BUNDLE_FILE = 'bundle.txt'.freeze
 BUILD_DIR = 'builds'.freeze
-HEADER_KEYS = [
-  '# title:',
-  '# author:',
-  '# desc:',
-  '# site:',
-  '# license:',
-  '# version:'
-].freeze
-SCRIPT_TAG = '# script:  ruby'.freeze
+
+# TIC-80 Supported Languages Configuration
+# https://github.com/nesbox/TIC-80/wiki/supported-languages
+LANG_CONFIG = {
+  '.lua' => { name: 'lua', comment_char: '--' },
+  '.moon' => { name: 'moon', comment_char: '--' },
+  '.js' => { name: 'js', comment_char: '//' },
+  '.rb' => { name: 'ruby', comment_char: '#' },
+  '.wren' => { name: 'wren', comment_char: '//' },
+  '.fnl' => { name: 'fennel', comment_char: ';;' },
+  '.nut' => { name: 'squirrel', comment_char: '//' },
+  '.janet' => { name: 'janet', comment_char: '#' },
+  '.py' => { name: 'python', comment_char: '#' }
+}.freeze
+
+HEADER_BASE_KEYS = %w[title author desc site license version].freeze
+INCLUDE_REGEX = /^\s*#include\s+['"]([^'"]+)['"]\s*$/.freeze
 ASSET_REGEX = /^# <[A-Z]+>/.freeze
-REQUIRE_REGEX = /^\s*require_relative\s+['"]([^'"]+)['"]\s*$/.freeze
 
 # --- HELPERS ---
 def error_exit(message)
@@ -30,84 +36,92 @@ def success_exit(message)
 end
 
 # --- VALIDATION ---
-def validate_master_file(path, lines)
-  puts "🔎 Validating master file: #{path}"
-  error_exit("Master file must have at least 7 lines for the header.") if lines.count < 7
+def validate_master_file(path, lines, lang_config)
+  puts "🔎 Validating master file: #{path} (as #{lang_config[:name]})"
+  error_exit('Master file must have at least 7 lines for the header.') if lines.count < 7
 
-  HEADER_KEYS.each_with_index do |key, i|
+  comment_char = lang_config[:comment_char]
+  header_keys = HEADER_BASE_KEYS.map { |key| "#{comment_char} #{key}:" }
+
+  header_keys.each_with_index do |key, i|
     error_exit("Invalid header. Line #{i + 1} should start with '#{key}'.") unless lines[i].strip.start_with?(key)
   end
 
-  error_exit("Invalid header. Line 7 should be '#{SCRIPT_TAG}'.") unless lines[6].strip == SCRIPT_TAG
-  puts "   - Header is valid."
+  script_tag = "#{comment_char} script:  #{lang_config[:name]}"
+  error_exit("Invalid header. Line 7 should be '#{script_tag}'.") unless lines[6].strip == script_tag
+  puts '   - Header is valid.'
 end
 
-def parse_load_file
-  error_exit("'#{LOAD_FILE}' not found in the current directory.") unless File.exist?(LOAD_FILE)
-  puts "🔎 Parsing '#{LOAD_FILE}'..."
+def parse_bundle_file
+  error_exit("'#{BUNDLE_FILE}' not found in the current directory.") unless File.exist?(BUNDLE_FILE)
+  puts "🔎 Parsing '#{BUNDLE_FILE}'..."
 
-  required_files = File.readlines(LOAD_FILE).map do |line|
-    match = line.match(REQUIRE_REGEX)
+  included_files = File.readlines(BUNDLE_FILE).map do |line|
+    match = line.match(INCLUDE_REGEX)
     match ? match[1] : nil
   end.compact
 
-  error_exit("'#{LOAD_FILE}' contains no valid require_relative statements.") if required_files.empty?
+  error_exit("'#{BUNDLE_FILE}' contains no valid #include statements.") if included_files.empty?
 
-  duplicates = required_files.select { |e| required_files.count(e) > 1 }.uniq
-  error_exit("Duplicate entries found in '#{LOAD_FILE}': #{duplicates.join(', ')}") unless duplicates.empty?
+  duplicates = included_files.select { |e| included_files.count(e) > 1 }.uniq
+  error_exit("Duplicate entries found in '#{BUNDLE_FILE}': #{duplicates.join(', ')}") unless duplicates.empty?
 
-  required_files.each do |file|
-    error_exit("Required file not found: #{file}") unless File.exist?(file)
+  included_files.each do |file|
+    error_exit("Included file not found: #{file}") unless File.exist?(file)
   end
 
-  puts "   - Found #{required_files.count} files to load."
-  required_files
+  puts "   - Found #{included_files.count} files to include."
+  included_files
 end
 
 # --- MAIN LOGIC ---
-# 1. Check arguments
+# 1. Check arguments and determine language
 master_file_path = ARGV.first
 error_exit("Usage: ./bin/build <master_file_path>") unless master_file_path
 error_exit("Master file not found: #{master_file_path}") unless File.exist?(master_file_path)
 
+file_ext = File.extname(master_file_path)
+lang_config = LANG_CONFIG[file_ext]
+error_exit("Unsupported file type: '#{file_ext}'. Supported types are: #{LANG_CONFIG.keys.join(', ')}") unless lang_config
+
 # 2. Read and validate master file
 master_lines = File.readlines(master_file_path)
-validate_master_file(master_file_path, master_lines)
+validate_master_file(master_file_path, master_lines, lang_config)
 
-# 3. Parse load.rb
-required_files = parse_load_file
+# 3. Parse bundle.txt
+included_files = parse_bundle_file
 
 # 4. Separate master file sections
-puts "🔪 Slicing master file into sections..."
+puts '🔪 Slicing master file into sections...'
 asset_start_index = master_lines.index { |line| line.match?(ASSET_REGEX) }
 error_exit("No asset section (e.g., # <TILES>) found in master file.") unless asset_start_index
 
 header_section = master_lines[0..6].join
 master_code_section = master_lines[7...asset_start_index].join
 assets_section = master_lines[asset_start_index..-1].join
-puts "   - Sections separated successfully."
+puts '   - Sections separated successfully.'
 
-# 5. Concatenate required files
-puts "📦 Concatenating required files..."
-injected_code = required_files.map do |file|
-  "\n# --- #{file} ---\n" + File.read(file)
+# 5. Concatenate included files
+puts '📦 Concatenating included files...'
+injected_code = included_files.map do |file|
+  "\n#{lang_config[:comment_char]} --- #{file} ---\n" + File.read(file)
 end.join
 
 # 6. Assemble final content
 final_content = [
   header_section,
   injected_code,
-  "\n# ------\n",
+  "\n#{lang_config[:comment_char]} ------\n",
   master_code_section,
   assets_section
 ].join
 
 # 7. Write output file
-puts "📝 Writing final build file..."
+puts '📝 Writing final build file...'
 FileUtils.mkdir_p(BUILD_DIR)
 timestamp = Time.now.strftime('%Y-%m-%d-%H%M%S')
-master_basename = File.basename(master_file_path, '.rb')
-output_path = File.join(BUILD_DIR, "#{master_basename}-#{timestamp}.rb")
+master_basename = File.basename(master_file_path, '.*')
+output_path = File.join(BUILD_DIR, "#{master_basename}-#{timestamp}#{file_ext}")
 
 File.write(output_path, final_content)
 

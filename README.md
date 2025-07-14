@@ -12,8 +12,10 @@ Break free from the single-file limitation of TIC-80's editor. This tool lets yo
 -   **Multi-Language Support**: Works with Lua, MoonScript, JS, Ruby, Wren, and more.
 -   **Modular Development**: Organize your game logic into separate files and folders.
 -   **Idempotent**: The build process is safe to run multiple times. It automatically cleans up code from previous builds to prevent duplication.
+-   **In-place Updates**: Optional `-f` flag to overwrite your master file directly for a faster workflow.
+-   **Easy Cleanup**: A simple `cleanup` command to remove old builds and keep your project tidy.
 -   **Convention-based**: Uses a simple `bundle.txt` file with an `#include` syntax to manage file order.
--   **Safe**: Never modifies your source files. It creates a new timestamped file in a `builds/` directory.
+-   **Safe by Default**: Never modifies your source files by default. It creates a new timestamped file in a `builds/` directory.
 -   **Validation**: Performs basic checks on your master file to catch common errors early.
 -   **Zero-dependency**: It's a single Ruby script with no external gems required.
 
@@ -28,17 +30,31 @@ Break free from the single-file limitation of TIC-80's editor. This tool lets yo
 
 ## Usage
 
+### Building your Project
+
 To build your project, run the script from your project's root and point it to your master file:
 ```sh
+# Create a new, timestamped build in the builds/ directory
 bin/build mygame.lua
 ```
 
+For a faster development cycle, you can use the `-f` flag to overwrite the master file directly, instead of creating a new file:
+```sh
+# Overwrite mygame.lua with the bundled code
+bin/build -f mygame.lua
+```
+
+### Cleaning up Old Builds
+
+To remove all but the most recent build file from the `builds/` directory, run:
+```sh
+bin/build cleanup
+```
+
 > [!NOTE]
-> The first time you run this command, if `bundle.txt` doesn't exist, the script will create a template file for you. Just fill it in and run the command again.
+> The first time you run a build command, if `bundle.txt` doesn't exist, the script will create a template file for you. Just fill it in and run the command again.
 
-A new, bundled game file will be created in the `builds/` directory, ready to be loaded into TIC-80.
-
-### Example `bundle.txt`
+## Example `bundle.txt`
 
 The files listed in `bundle.txt` will be included in the final build in the exact order they are written. The bundler supports paths with or without quotes.
 
@@ -71,17 +87,18 @@ The key feature of this bundler is its idempotent design, which allows for a fle
 
 1.  **Initial Build**: Start with your master file (`mygame.rb`) and your source files in the `src/` directory. Run `./bin/build mygame.rb`.
 2.  **Test**: Open the newly generated, timestamped file from the `builds/` directory in TIC-80 and test your game.
-3.  **Iterate**:
-    *   **For major changes**, edit the code in your `src/` files.
-    *   **For quick tweaks**, you can edit the code directly inside TIC-80 and save the cartridge. This saved file can now be used as the master file for the next build.
-4.  **Rebuild**: Run the build script again, using either your original master file or the file you just saved from TIC-80. The script is smart enough to clean up the old bundled code before injecting the new version.
-    ```sh
-    # Use the original master file
-    bin/build mygame.rb
+3.  **Iterate**: Make changes to your code in the `src/` files.
+4.  **Rebuild**: Run the build script again.
+    *   To directly update your master file for a quicker feedback loop (recommended for most development), use the `-f` flag.
+        ```sh
+        bin/build -f mygame.rb
+        ```
+    *   To create a versioned snapshot, run the build without flags.
+        ```sh
+        bin/build mygame.rb
+        ```
+5.  **Clean up**: Periodically, run `bin/build cleanup` to remove old builds from the `builds/` directory.
 
-    # Or use the previously generated file as the new master
-    bin/build builds/mygame-2023-10-27-103000.rb
-    ```
 This cycle allows you to stay productive without ever worrying about creating code duplication.
 
 ## How It Works

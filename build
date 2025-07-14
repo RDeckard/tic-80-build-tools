@@ -39,6 +39,31 @@ def success_exit(message)
   exit 0
 end
 
+# --- CLEANUP LOGIC ---
+def cleanup_builds
+  puts "🧹 Starting cleanup of '#{BUILD_DIR}' directory..."
+  unless Dir.exist?(BUILD_DIR)
+    success_exit("Directory '#{BUILD_DIR}' not found. Nothing to clean.")
+  end
+
+  build_files = Dir.glob(File.join(BUILD_DIR, '*')).sort
+
+  if build_files.length <= 1
+    msg = "No old builds to clean. At most one build file exists in '#{BUILD_DIR}'."
+    success_exit(msg)
+  end
+
+  files_to_delete = build_files[0...-1]
+  last_build = build_files.last
+
+  files_to_delete.each do |file|
+    File.delete(file)
+    puts "   - Deleted old build: #{file}"
+  end
+
+  success_exit("Cleanup complete. Kept most recent build: #{last_build}")
+end
+
 # --- VALIDATION ---
 def validate_master_file(path, lines, lang_config)
   puts "🔎 Validating master file: #{path} (as #{lang_config[:name]})"
@@ -105,9 +130,13 @@ def parse_bundle_file
 end
 
 # --- MAIN LOGIC ---
+# 0. Handle special commands
+cleanup_builds if ARGV.first == 'cleanup'
+
 # 1. Check arguments and determine language
+force_overwrite = ARGV.delete('-f')
 master_file_path = ARGV.first
-error_exit("Usage: ./bin/build <master_file_path>") unless master_file_path
+error_exit("Usage: #{$0} ([-f] <master_file_path>) | cleanup") unless master_file_path
 error_exit("Master file not found: #{master_file_path}") unless File.exist?(master_file_path)
 
 file_ext = File.extname(master_file_path)
@@ -172,11 +201,15 @@ final_content = [
 
 # 8. Write output file
 puts '📝 Writing final build file...'
-FileUtils.mkdir_p(BUILD_DIR)
-timestamp = Time.now.strftime('%Y-%m-%d-%H%M%S')
-master_basename = File.basename(master_file_path, '.*')
-output_path = File.join(BUILD_DIR, "#{master_basename}-#{timestamp}#{file_ext}")
+if force_overwrite
+  File.write(master_file_path, final_content)
+  success_exit("Build successful! Master file '#{master_file_path}' was overwritten.")
+else
+  FileUtils.mkdir_p(BUILD_DIR)
+  timestamp = Time.now.strftime('%Y-%m-%d-%H%M%S')
+  master_basename = File.basename(master_file_path, '.*')
+  output_path = File.join(BUILD_DIR, "#{master_basename}-#{timestamp}#{file_ext}")
 
-File.write(output_path, final_content)
-
-success_exit("Build successful! Output at: #{output_path}")
+  File.write(output_path, final_content)
+  success_exit("Build successful! Output at: #{output_path}")
+end

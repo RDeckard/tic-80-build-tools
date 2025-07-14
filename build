@@ -1,10 +1,12 @@
 #!/usr/bin/env ruby
 
+# frozen_string_literal: true
+
 require 'fileutils'
 require 'time'
 
-BUNDLE_FILE = 'bundle.txt'.freeze
-BUILD_DIR = 'builds'.freeze
+BUNDLE_FILE = 'bundle.txt'
+BUILD_DIR = 'builds'
 
 # TIC-80 Supported Languages Configuration
 # https://github.com/nesbox/TIC-80/wiki/supported-languages
@@ -21,8 +23,10 @@ LANG_CONFIG = {
 }.freeze
 
 HEADER_BASE_KEYS = %w[title author desc site license version].freeze
-INCLUDE_REGEX = /^\s*#include\s+['"]([^'"]+)['"]\s*$/.freeze
-ASSET_REGEX = /^# <[A-Z]+>/.freeze
+INCLUDE_REGEX = /^\s*#include\s+(.*)\s*$/.freeze
+ASSET_REGEX_STR = '<[A-Z]+>'
+BUNDLE_START_MARKER_BASE = '--- BEGIN BUNDLED CODE ---'
+BUNDLE_END_MARKER_BASE   = '--- END BUNDLED CODE ---'
 
 # --- HELPERS ---
 def error_exit(message)
@@ -41,7 +45,7 @@ def validate_master_file(path, lines, lang_config)
   error_exit('Master file must have at least 7 lines for the header.') if lines.count < 7
 
   comment_char = lang_config[:comment_char]
-  header_keys = HEADER_BASE_KEYS.map { |key| "#{comment_char} #{key}:" }
+  header_keys = HEADER_BASE_KEYS.map { "#{comment_char} #{_1}:" }
 
   header_keys.each_with_index do |key, i|
     error_exit("Invalid header. Line #{i + 1} should start with '#{key}'.") unless lines[i].strip.start_with?(key)
@@ -53,17 +57,43 @@ def validate_master_file(path, lines, lang_config)
 end
 
 def parse_bundle_file
-  error_exit("'#{BUNDLE_FILE}' not found in the current directory.") unless File.exist?(BUNDLE_FILE)
+  unless File.exist?(BUNDLE_FILE)
+    puts "✨ '#{BUNDLE_FILE}' not found. Creating a template for you..."
+    template_content = <<~TEMPLATE
+      # This file lists all the source files to be included in the final build.
+      # The build script respects the order of inclusion, so make sure to
+      # list files with dependencies before the files that use them.
+
+      # Add your files here using the #include directive. For example:
+      #
+      # #include src/utils.lua
+      # #include src/player.lua
+      # #include src/main.lua
+    TEMPLATE
+    File.write(BUNDLE_FILE, template_content)
+    success_exit("'#{BUNDLE_FILE}' created. Please add your source files to it and run the build again.")
+  end
+
   puts "🔎 Parsing '#{BUNDLE_FILE}'..."
 
   included_files = File.readlines(BUNDLE_FILE).map do |line|
     match = line.match(INCLUDE_REGEX)
-    match ? match[1] : nil
+    if match
+      path = match[1].strip
+      # Handle both quoted and unquoted paths
+      if (path.start_with?('"') && path.end_with?('"')) || (path.start_with?("'") && path.end_with?("'"))
+        path[1..-2]
+      else
+        path
+      end
+    else
+      nil
+    end
   end.compact
 
   error_exit("'#{BUNDLE_FILE}' contains no valid #include statements.") if included_files.empty?
 
-  duplicates = included_files.select { |e| included_files.count(e) > 1 }.uniq
+  duplicates = included_files.select { included_files.count(_1) > 1 }.uniq
   error_exit("Duplicate entries found in '#{BUNDLE_FILE}': #{duplicates.join(', ')}") unless duplicates.empty?
 
   included_files.each do |file|
@@ -88,12 +118,29 @@ error_exit("Unsupported file type: '#{file_ext}'. Supported types are: #{LANG_CO
 master_lines = File.readlines(master_file_path)
 validate_master_file(master_file_path, master_lines, lang_config)
 
-# 3. Parse bundle.txt
+# 3. Clean previous build artifacts from master_lines
+puts '🧹 Cleaning previous build artifacts...'
+comment_char = lang_config[:comment_char]
+start_marker_line = "#{comment_char} #{BUNDLE_START_MARKER_BASE}"
+end_marker_line = "#{comment_char} #{BUNDLE_END_MARKER_BASE}"
+
+start_index = master_lines.index { _1.strip == start_marker_line }
+end_index = master_lines.index { _1.strip == end_marker_line }
+
+if start_index && end_index
+  master_lines.slice!(start_index..end_index)
+  puts '   - Found and removed existing bundled code block.'
+else
+  puts '   - No previous build artifacts found.'
+end
+
+# 4. Parse bundle.txt
 included_files = parse_bundle_file
 
-# 4. Separate master file sections
+# 5. Separate master file sections from the (potentially cleaned) lines
 puts '🔪 Slicing master file into sections...'
-asset_start_index = master_lines.index { |line| line.match?(ASSET_REGEX) }
+asset_regex = /^#{comment_char} #{ASSET_REGEX_STR}/
+asset_start_index = master_lines.index { _1.match?(asset_regex) }
 error_exit("No asset section (e.g., # <TILES>) found in master file.") unless asset_start_index
 
 header_section = master_lines[0..6].join
@@ -101,22 +148,29 @@ master_code_section = master_lines[7...asset_start_index].join
 assets_section = master_lines[asset_start_index..-1].join
 puts '   - Sections separated successfully.'
 
-# 5. Concatenate included files
+# 6. Concatenate included files
 puts '📦 Concatenating included files...'
-injected_code = included_files.map do |file|
-  "\n#{lang_config[:comment_char]} --- #{file} ---\n" + File.read(file)
+concatenated_code = included_files.map do |file|
+  "\n#{comment_char} --- #{file} ---\n" + File.read(file)
 end.join
 
-# 6. Assemble final content
-final_content = [
-  header_section,
-  injected_code,
-  "\n#{lang_config[:comment_char]} ------\n",
-  master_code_section,
-  assets_section
-].join
+# 7. Assemble final content
+puts '🏗️ Assembling final content...'
 
-# 7. Write output file
+bundle_block = [
+  "#{comment_char} #{BUNDLE_START_MARKER_BASE}",
+  concatenated_code,
+  "#{comment_char} #{BUNDLE_END_MARKER_BASE}"
+].join("\n")
+
+final_content = [
+  header_section.strip,
+  bundle_block,
+  master_code_section.strip,
+  assets_section.strip
+].join("\n\n") + "\n"
+
+# 8. Write output file
 puts '📝 Writing final build file...'
 FileUtils.mkdir_p(BUILD_DIR)
 timestamp = Time.now.strftime('%Y-%m-%d-%H%M%S')

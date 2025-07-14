@@ -64,6 +64,49 @@ def cleanup_builds
   success_exit("Cleanup complete. Kept most recent build: #{last_build}")
 end
 
+def clear_bundle_from_master(master_file_path)
+  puts "🧹 Clearing bundled code from '#{master_file_path}'..."
+  error_exit("File not found: #{master_file_path}") unless File.exist?(master_file_path)
+
+  file_ext = File.extname(master_file_path)
+  lang_config = LANG_CONFIG[file_ext]
+  error_exit("Unsupported file type: '#{file_ext}' for clearing.") unless lang_config
+
+  master_lines = File.readlines(master_file_path)
+
+  comment_char = lang_config[:comment_char]
+  start_marker_line = "#{comment_char} #{BUNDLE_START_MARKER_BASE}"
+  end_marker_line = "#{comment_char} #{BUNDLE_END_MARKER_BASE}"
+
+  start_index = master_lines.index { _1.strip == start_marker_line }
+  end_index = master_lines.index { _1.strip == end_marker_line }
+
+  unless start_index && end_index
+    success_exit("No bundled code found in '#{master_file_path}'. Nothing to do.")
+  end
+
+  puts '   - Found and removed existing bundled code block.'
+  master_lines.slice!(start_index..end_index)
+
+  # Re-assemble the file to ensure clean formatting
+  asset_regex = /^#{comment_char} #{ASSET_REGEX_STR}/
+  asset_start_index = master_lines.index { _1.match?(asset_regex) }
+  error_exit("No asset section could be found in '#{master_file_path}' after cleaning.") unless asset_start_index
+
+  header_section = master_lines[0..6].join
+  master_code_section = master_lines[7...asset_start_index].join
+  assets_section = master_lines[asset_start_index..-1].join
+
+  final_content = [
+    header_section.strip,
+    master_code_section.strip,
+    assets_section.strip
+  ].reject(&:empty?).join("\n\n") + "\n"
+
+  File.write(master_file_path, final_content)
+  success_exit("Successfully cleared bundled code from '#{master_file_path}'.")
+end
+
 # --- VALIDATION ---
 def validate_master_file(path, lines, lang_config)
   puts "🔎 Validating master file: #{path} (as #{lang_config[:name]})"
@@ -130,24 +173,43 @@ def parse_bundle_file
 end
 
 # --- MAIN LOGIC ---
-# 0. Handle special commands
-cleanup_builds if ARGV.first == 'cleanup'
+# 0. Handle special commands and flags
+if ARGV.first == 'cleanup'
+  cleanup_builds
+end
 
-# 1. Check arguments and determine language
+should_clear = ARGV.delete('-c')
 force_overwrite = ARGV.delete('-f')
 master_file_path = ARGV.first
-error_exit("Usage: #{$0} ([-f] <master_file_path>) | cleanup") unless master_file_path
+
+# 1. Argument validation
+if should_clear && force_overwrite
+  error_exit("The options '-c' (clear) and '-f' (force overwrite) are mutually exclusive.")
+end
+
+unless master_file_path
+  error_exit("Usage: #{$0} ([-f] <master_file_path> | -c <master_file_path> | cleanup)")
+end
+
 error_exit("Master file not found: #{master_file_path}") unless File.exist?(master_file_path)
 
+# 2. Execute action based on flags
+if should_clear
+  clear_bundle_from_master(master_file_path)
+end
+
+# If we are not clearing, proceed with the build logic.
+# The script will have exited if 'cleanup' or 'clear' was successful.
+
+# 3. Read and validate master file
 file_ext = File.extname(master_file_path)
 lang_config = LANG_CONFIG[file_ext]
 error_exit("Unsupported file type: '#{file_ext}'. Supported types are: #{LANG_CONFIG.keys.join(', ')}") unless lang_config
 
-# 2. Read and validate master file
 master_lines = File.readlines(master_file_path)
 validate_master_file(master_file_path, master_lines, lang_config)
 
-# 3. Clean previous build artifacts from master_lines
+# 4. Clean previous build artifacts from master_lines
 puts '🧹 Cleaning previous build artifacts...'
 comment_char = lang_config[:comment_char]
 start_marker_line = "#{comment_char} #{BUNDLE_START_MARKER_BASE}"
@@ -163,10 +225,10 @@ else
   puts '   - No previous build artifacts found.'
 end
 
-# 4. Parse bundle.txt
+# 5. Parse bundle.txt
 included_files = parse_bundle_file
 
-# 5. Separate master file sections from the (potentially cleaned) lines
+# 6. Separate master file sections from the (potentially cleaned) lines
 puts '🔪 Slicing master file into sections...'
 asset_regex = /^#{comment_char} #{ASSET_REGEX_STR}/
 asset_start_index = master_lines.index { _1.match?(asset_regex) }
@@ -177,13 +239,13 @@ master_code_section = master_lines[7...asset_start_index].join
 assets_section = master_lines[asset_start_index..-1].join
 puts '   - Sections separated successfully.'
 
-# 6. Concatenate included files
+# 7. Concatenate included files
 puts '📦 Concatenating included files...'
 concatenated_code = included_files.map do |file|
   "\n#{comment_char} --- #{file} ---\n" + File.read(file)
 end.join
 
-# 7. Assemble final content
+# 8. Assemble final content
 puts '🏗️ Assembling final content...'
 
 bundle_block = [
@@ -199,7 +261,7 @@ final_content = [
   assets_section.strip
 ].join("\n\n") + "\n"
 
-# 8. Write output file
+# 9. Write output file
 puts '📝 Writing final build file...'
 if force_overwrite
   File.write(master_file_path, final_content)

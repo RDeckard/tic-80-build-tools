@@ -11,13 +11,14 @@ Break free from the single-file limitation of TIC-80's editor. This tool lets yo
 
 -   **Multi-Language Support**: Works with Lua, MoonScript, JS, Ruby, Wren, and more.
 -   **Modular Development**: Organize your game logic into separate files and folders.
--   **Idempotent**: The build process is safe to run multiple times. It automatically cleans up code from previous builds to prevent duplication.
--   **In-place Updates**: Optional `-f` flag to overwrite your master file directly for a faster workflow.
--   **Easy Cleanup**: A simple `cleanup` command to remove old builds and keep your project tidy.
--   **Convention-based**: Uses a simple `bundle.txt` file with an `#include` syntax to manage file order.
--   **Safe by Default**: Never modifies your source files by default. It creates a new timestamped file in a `builds/` directory.
--   **Validation**: Performs basic checks on your master file to catch common errors early.
--   **Zero-dependency**: It's a single Ruby script with no external gems required.
+-   **Idempotent**: Safe to run multiple times; automatically cleans up previous builds.
+-   **In-place Updates**: Use the `-f` flag to overwrite your master file for a faster workflow.
+-   **Code Clearing**: Use the `-c` flag to easily strip bundled code from a master file.
+-   **Easy Cleanup**: A `cleanup` command to remove old builds and keep your project tidy.
+-   **Convention-based**: Uses a simple `bundle.txt` to manage file inclusion order.
+-   **Safe by Default**: Creates new timestamped build files instead of modifying your sources.
+-   **Validation**: Performs basic checks on your master file to catch common errors.
+-   **Zero-dependency**: A single Ruby script with no external gems required.
 
 ## Installation
 
@@ -49,6 +50,14 @@ bin/build -f mygame.lua
 To remove all but the most recent build file from the `builds/` directory, run:
 ```sh
 bin/build cleanup
+```
+
+### Clearing Bundled Code from the Master File
+
+To remove the bundled code block from a master file, reverting it to its original state (before any bundling), use the `-c` flag:
+```sh
+# Remove bundled code from mygame.lua
+bin/build -c mygame.lua
 ```
 
 > [!NOTE]

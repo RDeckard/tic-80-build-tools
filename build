@@ -22,7 +22,6 @@ LANG_CONFIG = {
   '.py' => { name: 'python', comment_char: '#' }
 }.freeze
 
-HEADER_BASE_KEYS = %w[title author desc site license version].freeze
 INCLUDE_REGEX = /^\s*#include\s+(.*)\s*$/.freeze
 ASSET_REGEX_STR = '<[A-Z]+>'
 BUNDLE_START_MARKER_BASE = '--- BEGIN BUNDLED CODE ---'
@@ -39,7 +38,6 @@ def success_exit(message)
   exit 0
 end
 
-# --- CLEANUP LOGIC ---
 def cleanup_builds
   puts "🧹 Starting cleanup of '#{BUILD_DIR}' directory..."
   unless Dir.exist?(BUILD_DIR)
@@ -47,7 +45,6 @@ def cleanup_builds
   end
 
   build_files = Dir.glob(File.join(BUILD_DIR, '*')).sort
-
   if build_files.length <= 1
     msg = "No old builds to clean. At most one build file exists in '#{BUILD_DIR}'."
     success_exit(msg)
@@ -55,223 +52,182 @@ def cleanup_builds
 
   files_to_delete = build_files[0...-1]
   last_build = build_files.last
-
   files_to_delete.each do |file|
     File.delete(file)
     puts "   - Deleted old build: #{file}"
   end
 
-  success_exit("Cleanup complete. Kept most recent build: #{last_build}")
+  return last_build
 end
 
-def clear_bundle_from_master(master_file_path)
-  puts "🧹 Clearing bundled code from '#{master_file_path}'..."
-  error_exit("File not found: #{master_file_path}") unless File.exist?(master_file_path)
+class TicBundler
+  attr_reader :master_path, :lang_config, :comment_char
 
-  file_ext = File.extname(master_file_path)
-  lang_config = LANG_CONFIG[file_ext]
-  error_exit("Unsupported file type: '#{file_ext}' for clearing.") unless lang_config
-
-  master_lines = File.readlines(master_file_path)
-
-  comment_char = lang_config[:comment_char]
-  start_marker_line = "#{comment_char} #{BUNDLE_START_MARKER_BASE}"
-  end_marker_line = "#{comment_char} #{BUNDLE_END_MARKER_BASE}"
-
-  start_index = master_lines.index { _1.strip == start_marker_line }
-  end_index = master_lines.index { _1.strip == end_marker_line }
-
-  unless start_index && end_index
-    success_exit("No bundled code found in '#{master_file_path}'. Nothing to do.")
+  def initialize(master_path, force_overwrite: false)
+    @master_path = master_path
+    ext = File.extname(master_path)
+    @lang_config = LANG_CONFIG[ext] || error_exit("Unsupported file type: '#{ext}'. Supported types are: #{LANG_CONFIG.keys.join(', ')}")
+    @comment_char = @lang_config[:comment_char]
+    @force_overwrite = force_overwrite
+    @lines = File.readlines(master_path)
   end
 
-  puts '   - Found and removed existing bundled code block.'
-  master_lines.slice!(start_index..end_index)
-
-  # Re-assemble the file to ensure clean formatting
-  asset_regex = /^#{comment_char} #{ASSET_REGEX_STR}/
-  asset_start_index = master_lines.index { _1.match?(asset_regex) }
-  error_exit("No asset section could be found in '#{master_file_path}' after cleaning.") unless asset_start_index
-
-  header_section = master_lines[0..6].join
-  master_code_section = master_lines[7...asset_start_index].join
-  assets_section = master_lines[asset_start_index..-1].join
-
-  final_content = [
-    header_section.strip,
-    master_code_section.strip,
-    assets_section.strip
-  ].reject(&:empty?).join("\n\n") + "\n"
-
-  File.write(master_file_path, final_content)
-  success_exit("Successfully cleared bundled code from '#{master_file_path}'.")
-end
-
-# --- VALIDATION ---
-def validate_master_file(path, lines, lang_config)
-  puts "🔎 Validating master file: #{path} (as #{lang_config[:name]})"
-  error_exit('Master file must have at least 7 lines for the header.') if lines.count < 7
-
-  comment_char = lang_config[:comment_char]
-  header_keys = HEADER_BASE_KEYS.map { "#{comment_char} #{_1}:" }
-
-  header_keys.each_with_index do |key, i|
-    error_exit("Invalid header. Line #{i + 1} should start with '#{key}'.") unless lines[i].strip.start_with?(key)
-  end
-
-  script_tag = "#{comment_char} script:  #{lang_config[:name]}"
-  error_exit("Invalid header. Line 7 should be '#{script_tag}'.") unless lines[6].strip == script_tag
-  puts '   - Header is valid.'
-end
-
-def parse_bundle_file
-  unless File.exist?(BUNDLE_FILE)
-    puts "✨ '#{BUNDLE_FILE}' not found. Creating a template for you..."
-    template_content = <<~TEMPLATE
-      # This file lists all the source files to be included in the final build.
-      # The build script respects the order of inclusion, so make sure to
-      # list files with dependencies before the files that use them.
-
-      # Add your files here using the #include directive. For example:
-      #
-      # #include src/utils.lua
-      # #include src/player.lua
-      # #include src/main.lua
-    TEMPLATE
-    File.write(BUNDLE_FILE, template_content)
-    success_exit("'#{BUNDLE_FILE}' created. Please add your source files to it and run the build again.")
-  end
-
-  puts "🔎 Parsing '#{BUNDLE_FILE}'..."
-
-  included_files = File.readlines(BUNDLE_FILE).map do |line|
-    match = line.match(INCLUDE_REGEX)
-    if match
-      path = match[1].strip
-      # Handle both quoted and unquoted paths
-      if (path.start_with?('"') && path.end_with?('"')) || (path.start_with?("'") && path.end_with?("'"))
-        path[1..-2]
-      else
-        path
-      end
-    else
-      nil
+  def clear_bundle!
+    start_idx, end_idx = bundled_block_indices
+    unless start_idx && end_idx
+      success_exit("No bundled code found in '#{@master_path}'. Nothing to do.")
     end
-  end.compact
 
-  error_exit("'#{BUNDLE_FILE}' contains no valid #include statements.") if included_files.empty?
-
-  duplicates = included_files.select { included_files.count(_1) > 1 }.uniq
-  error_exit("Duplicate entries found in '#{BUNDLE_FILE}': #{duplicates.join(', ')}") unless duplicates.empty?
-
-  included_files.each do |file|
-    error_exit("Included file not found: #{file}") unless File.exist?(file)
+    @lines.slice!(start_idx..end_idx)
+    validate_header!
+    write_master(@lines.join)
+    success_exit("Successfully cleared bundled code from '#{@master_path}'.")
   end
 
-  puts "   - Found #{included_files.count} files to include."
-  included_files
+  def build!
+    validate_header!
+    remove_existing_bundle!
+
+    included_files = parse_bundle_file
+    bundled_code = included_files.map { "\n#{@comment_char} --- #{_1} ---\n" + File.read(_1) }.join
+
+    bundle_block = [
+      "#{@comment_char} #{BUNDLE_START_MARKER_BASE}",
+      bundled_code,
+      "#{@comment_char} #{BUNDLE_END_MARKER_BASE}"
+    ].join("\n")
+
+    assets_index = find_asset_start_index(@lines)
+    header_index  = find_script_tag_index(@lines)
+
+    header_section       = @lines[0..header_index].join.strip
+    master_code_section  = @lines[(header_index + 1)...assets_index].join.strip
+    assets_section       = @lines[assets_index..-1].join.strip
+
+    final_content = [header_section, bundle_block, master_code_section, assets_section].reject(&:empty?).join("\n\n") + "\n"
+
+    if @force_overwrite
+      write_master(final_content)
+      success_exit("Build successful! Master file '#{@master_path}' was overwritten.")
+    else
+      FileUtils.mkdir_p(BUILD_DIR)
+      timestamp = Time.now.strftime('%Y-%m-%d-%H%M%S')
+      base = File.basename(@master_path, '.*')
+      out_path = File.join(BUILD_DIR, "#{base}-#{timestamp}#{File.extname(@master_path)}")
+      File.write(out_path, final_content)
+      success_exit("Build successful! Output at: #{out_path}")
+    end
+  end
+
+  private
+
+  def script_tag_str
+    "#{@comment_char} script: #{@lang_config[:name]}"
+  end
+
+  def find_script_tag_index(lines)
+    lines.index { _1.strip.gsub(/\s+/, ' ') == script_tag_str }
+  end
+
+  def find_asset_start_index(lines)
+    regex = /^#{@comment_char} #{ASSET_REGEX_STR}/
+    lines.index { _1.match?(regex) }
+  end
+
+  def validate_header!
+    idx = find_script_tag_index(@lines) || error_exit("Missing 'script:' tag in #{@master_path}.")
+    @lines[0...idx].each_with_index do |line, i|
+      stripped = line.strip
+      unless stripped.empty? || stripped.start_with?(@comment_char)
+        error_exit("Invalid content on line #{i + 1}. Only comments or blank lines allowed before 'script:' tag.")
+      end
+    end
+  end
+
+  def bundled_block_indices
+    start_line = "#{@comment_char} #{BUNDLE_START_MARKER_BASE}"
+    end_line = "#{@comment_char} #{BUNDLE_END_MARKER_BASE}"
+    start_idx = @lines.index { _1.strip == start_line }
+    end_idx = @lines.index { _1.strip == end_line }
+    [start_idx, end_idx]
+  end
+
+  def remove_existing_bundle!
+    s_idx, e_idx = bundled_block_indices
+    @lines.slice!(s_idx..e_idx) if s_idx && e_idx
+  end
+
+  def write_master(content)
+    File.write(@master_path, content)
+  end
+
+  def parse_bundle_file
+    unless File.exist?(BUNDLE_FILE)
+      puts "✨ '#{BUNDLE_FILE}' not found. Creating a template for you..."
+      template_content = <<~TEMPLATE
+        # This file lists all the source files to be included in the final build.
+        # The build script respects the order of inclusion, so make sure to
+        # list files with dependencies before the files that use them.
+
+        # Add your files here using the #include directive. For example:
+        #
+        # #include src/utils.lua
+        # #include src/player.lua
+        # #include src/main.lua
+      TEMPLATE
+      File.write(BUNDLE_FILE, template_content)
+      success_exit("'#{BUNDLE_FILE}' created. Please add your source files to it and run the build again.")
+    end
+
+    puts "🔎 Parsing '#{BUNDLE_FILE}'..."
+
+    included_files = File.readlines(BUNDLE_FILE).map do |line|
+      match = line.match(INCLUDE_REGEX)
+      if match
+        path = match[1].strip
+        if (path.start_with?('"') && path.end_with?('"')) || (path.start_with?("'") && path.end_with?("'"))
+          path[1..-2]
+        else
+          path
+        end
+      else
+        nil
+      end
+    end.compact
+
+    error_exit("'#{BUNDLE_FILE}' contains no valid #include statements.") if included_files.empty?
+
+    duplicates = included_files.select { included_files.count(_1) > 1 }.uniq
+    error_exit("Duplicate entries found in '#{BUNDLE_FILE}': #{duplicates.join(', ')}") unless duplicates.empty?
+
+    included_files.each do |file|
+      error_exit("Included file not found: #{file}") unless File.exist?(file)
+    end
+
+    puts "   - Found #{included_files.count} files to include."
+    included_files
+  end
 end
 
 # --- MAIN LOGIC ---
-# 0. Handle special commands and flags
 if ARGV.first == 'cleanup'
-  cleanup_builds
+  last_build = cleanup_builds
+  success_exit("Cleanup complete. Kept most recent build: #{last_build}")
 end
 
 should_clear = ARGV.delete('-c')
 force_overwrite = ARGV.delete('-f')
-master_file_path = ARGV.first
-
-# 1. Argument validation
 if should_clear && force_overwrite
   error_exit("The options '-c' (clear) and '-f' (force overwrite) are mutually exclusive.")
 end
 
-unless master_file_path
-  error_exit("Usage: #{$0} ([-f] <master_file_path> | -c <master_file_path> | cleanup)")
-end
-
+master_file_path = ARGV.first
+error_exit("Usage: #{$0} [-f] <master_file_path> | -c <master_file_path> | cleanup") unless master_file_path
 error_exit("Master file not found: #{master_file_path}") unless File.exist?(master_file_path)
 
-# 2. Execute action based on flags
+bundler = TicBundler.new(master_file_path, force_overwrite: force_overwrite)
 if should_clear
-  clear_bundle_from_master(master_file_path)
-end
-
-# If we are not clearing, proceed with the build logic.
-# The script will have exited if 'cleanup' or 'clear' was successful.
-
-# 3. Read and validate master file
-file_ext = File.extname(master_file_path)
-lang_config = LANG_CONFIG[file_ext]
-error_exit("Unsupported file type: '#{file_ext}'. Supported types are: #{LANG_CONFIG.keys.join(', ')}") unless lang_config
-
-master_lines = File.readlines(master_file_path)
-validate_master_file(master_file_path, master_lines, lang_config)
-
-# 4. Clean previous build artifacts from master_lines
-puts '🧹 Cleaning previous build artifacts...'
-comment_char = lang_config[:comment_char]
-start_marker_line = "#{comment_char} #{BUNDLE_START_MARKER_BASE}"
-end_marker_line = "#{comment_char} #{BUNDLE_END_MARKER_BASE}"
-
-start_index = master_lines.index { _1.strip == start_marker_line }
-end_index = master_lines.index { _1.strip == end_marker_line }
-
-if start_index && end_index
-  master_lines.slice!(start_index..end_index)
-  puts '   - Found and removed existing bundled code block.'
+  bundler.clear_bundle!
 else
-  puts '   - No previous build artifacts found.'
-end
-
-# 5. Parse bundle.txt
-included_files = parse_bundle_file
-
-# 6. Separate master file sections from the (potentially cleaned) lines
-puts '🔪 Slicing master file into sections...'
-asset_regex = /^#{comment_char} #{ASSET_REGEX_STR}/
-asset_start_index = master_lines.index { _1.match?(asset_regex) }
-error_exit("No asset section (e.g., # <TILES>) found in master file.") unless asset_start_index
-
-header_section = master_lines[0..6].join
-master_code_section = master_lines[7...asset_start_index].join
-assets_section = master_lines[asset_start_index..-1].join
-puts '   - Sections separated successfully.'
-
-# 7. Concatenate included files
-puts '📦 Concatenating included files...'
-concatenated_code = included_files.map do |file|
-  "\n#{comment_char} --- #{file} ---\n" + File.read(file)
-end.join
-
-# 8. Assemble final content
-puts '🏗️ Assembling final content...'
-
-bundle_block = [
-  "#{comment_char} #{BUNDLE_START_MARKER_BASE}",
-  concatenated_code,
-  "#{comment_char} #{BUNDLE_END_MARKER_BASE}"
-].join("\n")
-
-final_content = [
-  header_section.strip,
-  bundle_block,
-  master_code_section.strip,
-  assets_section.strip
-].join("\n\n") + "\n"
-
-# 9. Write output file
-puts '📝 Writing final build file...'
-if force_overwrite
-  File.write(master_file_path, final_content)
-  success_exit("Build successful! Master file '#{master_file_path}' was overwritten.")
-else
-  FileUtils.mkdir_p(BUILD_DIR)
-  timestamp = Time.now.strftime('%Y-%m-%d-%H%M%S')
-  master_basename = File.basename(master_file_path, '.*')
-  output_path = File.join(BUILD_DIR, "#{master_basename}-#{timestamp}#{file_ext}")
-
-  File.write(output_path, final_content)
-  success_exit("Build successful! Output at: #{output_path}")
+  bundler.build!
 end

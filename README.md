@@ -114,12 +114,12 @@ This cycle allows you to stay productive without ever worrying about creating co
 
 The build script performs the following steps:
 1.  It detects the language from your master file's extension (e.g., `.lua`, `.rb`).
-2.  It validates the master file's header to ensure it's a standard TIC-80 file for that language.
+2.  It validates the master file. It ensures that the language declared in the `script:` tag matches the file extension.
 3.  It automatically removes any code that was injected by a previous run of the script.
 4.  It parses a `bundle.txt` file in your project root to get an ordered list of source files to include.
 5.  It concatenates the content of each included file.
 6.  It assembles a brand new file in the `builds/` directory, structured as follows:
-    1.  The header from your master file (metadata comments).
+    1.  The header from your master file (metadata comments), which **must finish with the `script: <language>` line**
     2.  The concatenated code from the files listed in `bundle.txt`, wrapped in special markers.
     3.  The code from your master file itself.
     4.  The asset sections (`# <TILES>`, `# <SPRITES>`, etc.) from your master file.

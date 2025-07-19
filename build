@@ -4,29 +4,11 @@
 
 require 'fileutils'
 require 'time'
+require 'open3'
 require 'optparse'
 
-BUNDLE_FILE = 'bundle.txt'
-BUILD_DIR = 'builds'
-
-# TIC-80 Supported Languages Configuration
-# https://github.com/nesbox/TIC-80/wiki/supported-languages
-LANG_CONFIG = {
-  '.lua' => { name: 'lua', comment_char: '--' },
-  '.moon' => { name: 'moon', comment_char: '--' },
-  '.js' => { name: 'js', comment_char: '//' },
-  '.rb' => { name: 'ruby', comment_char: '#' },
-  '.wren' => { name: 'wren', comment_char: '//' },
-  '.fnl' => { name: 'fennel', comment_char: ';;' },
-  '.nut' => { name: 'squirrel', comment_char: '//' },
-  '.janet' => { name: 'janet', comment_char: '#' },
-  '.py' => { name: 'python', comment_char: '#' }
-}.freeze
-
-INCLUDE_REGEX = /^\s*#include\s+(.*)\s*$/.freeze
-ASSET_REGEX_STR = '<[A-Z]+>'
-BUNDLE_START_MARKER_BASE = '--- BEGIN BUNDLED CODE ---'
-BUNDLE_END_MARKER_BASE   = '--- END BUNDLED CODE ---'
+DIST_DIR = 'dists'
+TIC_EXECUTABLE = 'tic80'
 
 # --- HELPERS ---
 def error_exit(message)
@@ -39,194 +21,132 @@ def success_exit(message)
   exit 0
 end
 
-def cleanup_builds
-  puts "🧹 Starting cleanup of '#{BUILD_DIR}' directory..."
-  unless Dir.exist?(BUILD_DIR)
-    success_exit("Directory '#{BUILD_DIR}' not found. Nothing to clean.")
+def check_executable(name)
+  Open3.capture3("#{name} --version")
+  true
+rescue Errno::ENOENT
+  false
+end
+
+def cleanup_dists
+  puts "🧹 Starting cleanup of '#{DIST_DIR}' directory..."
+  unless Dir.exist?(DIST_DIR)
+    success_exit("Directory '#{DIST_DIR}' not found. Nothing to clean.")
   end
 
-  build_files = Dir.glob(File.join(BUILD_DIR, '*')).sort
-  if build_files.length <= 1
-    msg = "No old builds to clean. At most one build file exists in '#{BUILD_DIR}'."
+  dist_dirs = Dir.glob(File.join(DIST_DIR, '*/')).sort
+
+  if dist_dirs.length <= 1
+    msg = "No old builds to clean. At most one build exists in '#{DIST_DIR}'."
     success_exit(msg)
   end
 
-  files_to_delete = build_files[0...-1]
-  last_build = build_files.last
-  files_to_delete.each do |file|
-    File.delete(file)
-    puts "   - Deleted old build: #{file}"
+  dirs_to_delete = dist_dirs[0...-1]
+  last_dist = dist_dirs.last
+
+  dirs_to_delete.each do |dir|
+    puts "   - Deleting old build: #{File.basename(dir.chomp('/'))}"
+    FileUtils.rm_r(dir)
   end
 
-  return last_build
+  success_exit("Cleanup complete. Kept most recent build: #{File.basename(last_dist.chomp('/'))}")
 end
 
-class TicBundler
-  attr_reader :master_path, :lang_config, :comment_char
+class TicMaker
+  attr_reader :cart_path
 
-  def initialize(master_path, force_overwrite: false)
-    @master_path = master_path
-    ext = File.extname(master_path)
-    @lang_config = LANG_CONFIG[ext] || error_exit("Unsupported file type: '#{ext}'. Supported types are: #{LANG_CONFIG.keys.join(', ')}")
-    @comment_char = @lang_config[:comment_char]
-    @force_overwrite = force_overwrite
-    @lines = File.readlines(master_path)
+  def initialize(cart_path)
+    error_exit("Cart file not found at '#{cart_path}'.") unless File.exist?(cart_path)
+    @cart_path = cart_path
   end
 
-  def clear_bundle!
-    start_idx, end_idx = bundled_block_indices
-    unless start_idx && end_idx
-      success_exit("No bundled code found in '#{@master_path}'. Nothing to do.")
-    end
+  def make!(zip: false, with_sources: false)
+    message = "Preparing to make binaries from '#{@cart_path}'"
+    message << ' with sources included' if with_sources
+    message << ' and zip them' if zip
+    puts "🔎 #{message}..."
 
-    @lines.slice!(start_idx..end_idx)
-    validate_header!
-    write_master(@lines.join)
-    success_exit("Successfully cleared bundled code from '#{@master_path}'.")
-  end
+    error_exit("Could not find '#{TIC_EXECUTABLE}' executable. Please ensure it's in your PATH.") unless check_executable(TIC_EXECUTABLE)
+    error_exit("Could not find 'zip' executable. Please ensure it's in your PATH.") if zip && !check_executable('zip')
 
-  def build!
-    validate_header!
-    remove_existing_bundle!
+    base_name = File.basename(@cart_path, '.*')
+    timestamp = Time.now.strftime('%Y-%m-%d-%H%M%S')
+    output_dir = File.join(DIST_DIR, "#{base_name}-#{timestamp}")
+    FileUtils.mkdir_p(output_dir)
 
-    included_files = parse_bundle_file
-    bundled_code = included_files.map { "\n#{@comment_char} --- #{_1} ---\n" + File.read(_1) }.join
+    exports = {
+      html: '-html',
+      win: '-win',
+      linux: '-linux',
+      mac: '-mac',
+      rpi: '-rpi'
+    }
 
-    bundle_block = [
-      "#{@comment_char} #{BUNDLE_START_MARKER_BASE}",
-      bundled_code,
-      "#{@comment_char} #{BUNDLE_END_MARKER_BASE}"
-    ].join("\n")
+    exports.each do |format, suffix|
+      puts "   - Exporting for #{format.to_s.capitalize}..."
+      base_export_path = File.join(output_dir, "#{base_name}#{suffix}")
 
-    assets_index = find_asset_start_index(@lines)
-    header_index  = find_script_tag_index(@lines)
+      alone_option = with_sources ? '' : ' alone=1'
+      cmd = "#{TIC_EXECUTABLE} --cli --fs . --cmd 'load #{@cart_path} & export #{format} #{base_export_path}#{alone_option}'"
 
-    header_section       = @lines[0..header_index].join.strip
-    master_code_section  = @lines[(header_index + 1)...assets_index].join.strip
-    assets_section       = @lines[assets_index..-1].join.strip
+      files_before = Dir.glob(File.join(output_dir, '*'))
+      _stdout, stderr, status = Open3.capture3(cmd)
+      files_after = Dir.glob(File.join(output_dir, '*'))
 
-    final_content = [header_section, bundle_block, master_code_section, assets_section].reject(&:empty?).join("\n\n") + "\n"
+      new_artifacts = files_after - files_before
 
-    if @force_overwrite
-      write_master(final_content)
-      success_exit("Build successful! Master file '#{@master_path}' was overwritten.")
-    else
-      FileUtils.mkdir_p(BUILD_DIR)
-      timestamp = Time.now.strftime('%Y-%m-%d-%H%M%S')
-      base = File.basename(@master_path, '.*')
-      out_path = File.join(BUILD_DIR, "#{base}-#{timestamp}#{File.extname(@master_path)}")
-      File.write(out_path, final_content)
-      success_exit("Build successful! Output at: #{out_path}")
-    end
-  end
-
-  private
-
-  def script_tag_str
-    "#{@comment_char} script: #{@lang_config[:name]}"
-  end
-
-  def find_script_tag_index(lines)
-    lines.index { _1.strip.gsub(/\s+/, ' ') == script_tag_str }
-  end
-
-  def find_asset_start_index(lines)
-    regex = /^#{@comment_char} #{ASSET_REGEX_STR}/
-    lines.index { _1.match?(regex) }
-  end
-
-  def validate_header!
-    idx = find_script_tag_index(@lines) || error_exit("Missing 'script:' tag in #{@master_path}.")
-    @lines[0...idx].each_with_index do |line, i|
-      stripped = line.strip
-      unless stripped.empty? || stripped.start_with?(@comment_char)
-        error_exit("Invalid content on line #{i + 1}. Only comments or blank lines allowed before 'script:' tag.")
+      if !status.success? || new_artifacts.empty?
+        puts "     \e[31mFailed to export for #{format.to_s.capitalize}.\e[0m"
+        puts "     \e[33mTIC-80 output:\n#{stderr}\e[0m"
+        next
       end
-    end
-  end
 
-  def bundled_block_indices
-    start_line = "#{@comment_char} #{BUNDLE_START_MARKER_BASE}"
-    end_line = "#{@comment_char} #{BUNDLE_END_MARKER_BASE}"
-    start_idx = @lines.index { _1.strip == start_line }
-    end_idx = @lines.index { _1.strip == end_line }
-    [start_idx, end_idx]
-  end
+      puts "     - Created: #{new_artifacts.map { |p| File.basename(p) }.join(', ')}"
 
-  def remove_existing_bundle!
-    s_idx, e_idx = bundled_block_indices
-    @lines.slice!(s_idx..e_idx) if s_idx && e_idx
-  end
+      next unless zip
 
-  def write_master(content)
-    File.write(@master_path, content)
-  end
+      if new_artifacts.length == 1 && new_artifacts.first.end_with?('.zip')
+        puts "     - Skipping zip for already compressed file."
+        next
+      end
 
-  def parse_bundle_file
-    unless File.exist?(BUNDLE_FILE)
-      puts "✨ '#{BUNDLE_FILE}' not found. Creating a template for you..."
-      template_content = <<~TEMPLATE
-        # This file lists all the source files to be included in the final build.
-        # The build script respects the order of inclusion, so make sure to
-        # list files with dependencies before the files that use them.
+      zip_path = "#{base_export_path}.zip"
+      artifact_basenames = new_artifacts.map { |p| "'#{File.basename(p)}'" }.join(' ')
 
-        # Add your files here using the #include directive. For example:
-        #
-        # #include src/utils.lua
-        # #include src/player.lua
-        # #include src/main.lua
-      TEMPLATE
-      File.write(BUNDLE_FILE, template_content)
-      success_exit("'#{BUNDLE_FILE}' created. Please add your source files to it and run the build again.")
-    end
+      zip_cmd = "cd '#{output_dir}' && zip -r '#{File.basename(zip_path)}' #{artifact_basenames}"
 
-    puts "🔎 Parsing '#{BUNDLE_FILE}'..."
+      _zip_stdout, zip_stderr, zip_status = Open3.capture3(zip_cmd)
 
-    included_files = File.readlines(BUNDLE_FILE).map do |line|
-      match = line.match(INCLUDE_REGEX)
-      if match
-        path = match[1].strip
-        if (path.start_with?('"') && path.end_with?('"')) || (path.start_with?("'") && path.end_with?("'"))
-          path[1..-2]
-        else
-          path
-        end
+      if zip_status.success?
+        puts "     - Zipped:  #{File.basename(zip_path)}"
+        FileUtils.rm_r(new_artifacts)
       else
-        nil
+        puts "     \e[31mFailed to zip artifact(s): #{artifact_basenames}.\e[0m"
+        puts "     \e[33mZip output:\n#{zip_stderr}\e[0m"
       end
-    end.compact
-
-    error_exit("'#{BUNDLE_FILE}' contains no valid #include statements.") if included_files.empty?
-
-    duplicates = included_files.select { included_files.count(_1) > 1 }.uniq
-    error_exit("Duplicate entries found in '#{BUNDLE_FILE}': #{duplicates.join(', ')}") unless duplicates.empty?
-
-    included_files.each do |file|
-      error_exit("Included file not found: #{file}") unless File.exist?(file)
     end
 
-    puts "   - Found #{included_files.count} files to include."
-    included_files
+    action_desc = zip ? 'built and zipped' : 'built'
+    success_exit("Successfully #{action_desc} binaries in: #{output_dir}")
   end
 end
 
 # --- MAIN LOGIC ---
 if ARGV.first == 'cleanup'
-  last_build = cleanup_builds
-  success_exit("Cleanup complete. Kept most recent build: #{last_build}")
+  cleanup_dists
 end
 
-options = { clear: false, force_overwrite: false }
+options = { zip: false, with_sources: false }
 
 OptionParser.new do |opts|
-  opts.banner = "Usage: #{$PROGRAM_NAME} [options] <master_file_path> | cleanup"
+  opts.banner = "Usage: #{$0} [options] <path_to_cart_file>"
 
-  opts.on('-c', '--clear', 'Clear previously bundled code from the master file.') do
-    options[:clear] = true
+  opts.on('-z', '--zip', 'Zip the output binaries after creation.') do
+    options[:zip] = true
   end
 
-  opts.on('-f', '--force', 'Force overwrite of the master file.') do
-    options[:force_overwrite] = true
+  opts.on('-s', '--with-sources', 'Include sources in the output binaries.') do
+    options[:with_sources] = true
   end
 
   opts.on_tail('-h', '--help', 'Show this message') do
@@ -235,17 +155,10 @@ OptionParser.new do |opts|
   end
 end.parse!
 
-if options[:clear] && options[:force_overwrite]
-  error_exit("The options '--clear' and '--force' are mutually exclusive.")
+if ARGV.empty?
+  error_exit("Usage: #{$0} <path_to_cart_file>\nUse -h or --help for more options.")
 end
 
-master_file_path = ARGV.first
-error_exit("Usage: #{$PROGRAM_NAME} [-f] <master_file_path> | -c <master_file_path> | cleanup") unless master_file_path
-error_exit("Master file not found: #{master_file_path}") unless File.exist?(master_file_path)
-
-bundler = TicBundler.new(master_file_path, force_overwrite: options[:force_overwrite])
-if options[:clear]
-  bundler.clear_bundle!
-else
-  bundler.build!
-end
+cart_file_path = ARGV.first
+maker = TicMaker.new(cart_file_path)
+maker.make!(zip: options[:zip], with_sources: options[:with_sources])

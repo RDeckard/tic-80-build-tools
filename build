@@ -4,6 +4,7 @@
 
 require 'fileutils'
 require 'time'
+require 'optparse'
 
 BUNDLE_FILE = 'bundle.txt'
 BUILD_DIR = 'builds'
@@ -215,18 +216,35 @@ if ARGV.first == 'cleanup'
   success_exit("Cleanup complete. Kept most recent build: #{last_build}")
 end
 
-should_clear = ARGV.delete('-c')
-force_overwrite = ARGV.delete('-f')
-if should_clear && force_overwrite
-  error_exit("The options '-c' (clear) and '-f' (force overwrite) are mutually exclusive.")
+options = { clear: false, force_overwrite: false }
+
+OptionParser.new do |opts|
+  opts.banner = "Usage: #{$PROGRAM_NAME} [options] <master_file_path> | cleanup"
+
+  opts.on('-c', '--clear', 'Clear previously bundled code from the master file.') do
+    options[:clear] = true
+  end
+
+  opts.on('-f', '--force', 'Force overwrite of the master file.') do
+    options[:force_overwrite] = true
+  end
+
+  opts.on_tail('-h', '--help', 'Show this message') do
+    puts opts
+    exit
+  end
+end.parse!
+
+if options[:clear] && options[:force_overwrite]
+  error_exit("The options '--clear' and '--force' are mutually exclusive.")
 end
 
 master_file_path = ARGV.first
-error_exit("Usage: #{$0} [-f] <master_file_path> | -c <master_file_path> | cleanup") unless master_file_path
+error_exit("Usage: #{$PROGRAM_NAME} [-f] <master_file_path> | -c <master_file_path> | cleanup") unless master_file_path
 error_exit("Master file not found: #{master_file_path}") unless File.exist?(master_file_path)
 
-bundler = TicBundler.new(master_file_path, force_overwrite: force_overwrite)
-if should_clear
+bundler = TicBundler.new(master_file_path, force_overwrite: options[:force_overwrite])
+if options[:clear]
   bundler.clear_bundle!
 else
   bundler.build!

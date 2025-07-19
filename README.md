@@ -1,128 +1,175 @@
-# TIC-80 Pro Bundler
+# TIC-80 Pro Build Tools
 
 > [!IMPORTANT]
-> This tool requires the **Pro version** of TIC-80. It relies on the ability to save and load cartridges as text-based files (`.rb`, `.lua`, etc.), a feature only available in TIC-80 Pro.
+> The **`build` script requires TIC-80 Pro** as it relies on text-based cartridge formats which are only available in the Pro version.
+>
+> The **`make` script works with both free and Pro versions** of TIC-80:
+> - **Free version**: Use the `--with-sources` (`-s`) flag to include sources in your binaries
+> - **Pro version**: Works with or without the `--with-sources` flag (default excludes sources for smaller binaries)
 
-A simple, zero-dependency build script that empowers you to develop modular games for the [TIC-80](https://tic80.com/) fantasy computer, in any of its supported languages.
+A collection of simple, zero-dependency scripts that provide a powerful workflow for developing and distributing games for the [TIC-80](https://tic80.com/) fantasy computer.
 
-Break free from the single-file limitation of TIC-80's editor. This tool lets you organize your project into multiple files and directories, then bundles them into a single, valid cart file ready to be run.
+-   **`build`**: Break free from the single-file limitation. Organize your project into multiple files and directories, and this script will bundle them into a single, valid cart file. *(Requires TIC-80 Pro)*
+-   **`make`**: Go from a bundled cartridge to distributable binaries. This script automates the process of exporting your game for multiple platforms (Windows, macOS, Linux, Web, etc.). *(Works with free and Pro versions)*
 
 ## Features
 
+-   **Modular Development**: Organize your code in separate files and folders.
+-   **Multi-Platform Export**: Generate binaries for all major platforms with a single command.
+-   **Automated Zipping**: Optionally compress your binaries into `.zip` archives.
+-   **Source Inclusion**: Choose whether to include sources in your distributed binaries.
 -   **Multi-Language Support**: Works with Lua, MoonScript, JS, Ruby, Wren, and more.
--   **Modular Development**: Organize your game logic into separate files and folders.
--   **Idempotent**: Safe to run multiple times; automatically cleans up previous builds.
--   **In-place Updates**: Use the `-f` flag to overwrite your master file for a faster workflow.
--   **Code Clearing**: Use the `-c` flag to easily strip bundled code from a master file.
--   **Easy Cleanup**: A `cleanup` command to remove old builds and keep your project tidy.
--   **Convention-based**: Uses a simple `bundle.txt` to manage file inclusion order.
--   **Safe by Default**: Creates new timestamped build files instead of modifying your sources.
--   **Validation**: Performs basic checks on your master file to catch common errors.
--   **Zero-dependency**: A single Ruby script with no external gems required.
+-   **Idempotent & Safe**: Scripts are safe to run multiple times and create timestamped outputs by default.
+-   **Easy Cleanup**: Keep your project tidy with `cleanup` commands for both builds and distributions.
+-   **Convention-based**: Uses a simple `bundle.txt` for source inclusion and sensible defaults.
+-   **Zero-dependency**: Just two Ruby scripts. No external gems required.
 
 ## Installation
 
-1.  Create a `bin` directory at the root of your project.
-2.  Place the `build` script inside this `bin` directory.
-3.  Make the script executable (you only need to do this once):
+1.  Create a `bin/` directory in your project and place the `build` and `make` scripts there.
+2.  Make the scripts executable (you only need to do this once):
     ```sh
-    chmod +x bin/build
+    chmod +x bin/build bin/make
+    ```
+3.  Ensure you have TIC-80's executable (`tic80`) in your system's PATH for the `make` script to work.
+    - For the `build` script: **TIC-80 Pro is required**
+    - For the `make` script: Both free and Pro versions work (see usage notes below)
+4.  Add the following entries to your `.gitignore` file to keep your repository clean:
+    ```gitignore
+    # TIC-80 Pro Build Tools output directories
+    builds/
+    dists/
     ```
 
 ## Usage
 
-### Building your Project
+### Using the `build` Script
 
-To build your project, run the script from your project's root and point it to your master file:
+> [!NOTE]
+> This script requires **TIC-80 Pro** as it works with text-based cartridge formats.
+
+The `build` script assembles your source files from the `src/` directory into a single TIC-80 cartridge file.
+
+**Building your Project**
 ```sh
 # Create a new, timestamped build in the builds/ directory
 bin/build mygame.lua
 ```
-
-For a faster development cycle, you can use the `-f` flag to overwrite the master file directly, instead of creating a new file:
+For a faster development cycle, use the `-f` flag to overwrite the master file directly:
 ```sh
 # Overwrite mygame.lua with the bundled code
 bin/build -f mygame.lua
 ```
 
-### Cleaning up Old Builds
-
-To remove all but the most recent build file from the `builds/` directory, run:
+**Cleaning up Old Builds**
 ```sh
+# Remove all but the most recent build from the builds/ directory
 bin/build cleanup
 ```
 
-### Clearing Bundled Code from the Master File
+**Clearing Bundled Code**
 
-To remove the bundled code block from a master file, reverting it to its original state (before any bundling), use the `-c` flag:
+To strip bundled code from a master file, use the `-c` flag:
 ```sh
-# Remove bundled code from mygame.lua
 bin/build -c mygame.lua
 ```
 
+### Using the `make` Script
+
 > [!NOTE]
-> The first time you run a build command, if `bundle.txt` doesn't exist, the script will create a template file for you. Just fill it in and run the command again.
+> This script works with both **free and Pro versions** of TIC-80:
+> - **If you have the free version**: Always use the `--with-sources` (`-s`) flag
+> - **If you have TIC-80 Pro**: Use `--with-sources` (`-s`) to include sources, or omit it for smaller binaries without sources
 
-## Example `bundle.txt`
+The `make` script takes a TIC-80 cartridge file (usually a bundled one from `builds/`) and exports it into distributable binaries for multiple platforms.
 
-The files listed in `bundle.txt` will be included in the final build in the exact order they are written. The bundler supports paths with or without quotes.
+**Making Binaries**
+```sh
+# For TIC-80 Pro (creates smaller binaries without sources)
+bin/make builds/mygame-*.lua
 
+# For free TIC-80 or if you want sources included
+bin/make -s builds/mygame-*.lua
 ```
-# The order of inclusion is respected by the build script.
-# Ensure dependencies are loaded before files that use them.
 
-#include src/player.lua
-#include src/main.lua
+**Zipping Binaries**
+
+To compress the exported files, use the `-z` flag. This is useful for sharing.
+```sh
+# Export and zip all binaries (Pro version)
+bin/make -z builds/mygame-*.lua
+
+# Export with sources and zip all binaries (free version or Pro with sources)
+bin/make -sz builds/mygame-*.lua
+```
+
+**Including Sources in Binaries**
+
+By default with TIC-80 Pro, the exported binaries don't include your source code for smaller file sizes. To include sources in the distributed binaries, use the `-s` flag:
+```sh
+# Export binaries with sources included (required for free TIC-80)
+bin/make -s builds/mygame-*.lua
+
+# You can combine flags: export with sources and zip everything
+bin/make -sz builds/mygame-*.lua
+```
+
+**Cleaning up Old Distributions**
+```sh
+# Remove all but the most recent distribution from the dists/ directory
+bin/make cleanup
 ```
 
 ## Recommended Project Structure
 
 ```
 .
-├── builds/
-│   └── (generated files will appear here)
 ├── bin/
-│   └── build          # The build script
+│   ├── build          # The build script (requires TIC-80 Pro)
+│   └── make           # The make script (works with free and Pro)
+├── builds/            # Bundled cartridges are generated here
+│   └── ...
+├── dists/             # Exported game binaries are generated here
+│   └── ...
 ├── src/
 │   ├── main.lua       # Your core game logic
 │   └── player.lua     # An example module
-├── mygame.lua           # Your master TIC-80 file (entry point)
-└── bundle.txt         # The file that lists your source files
+├── .gitignore         # Should include builds/ and dists/
+├── mygame.lua         # Your master TIC-80 file (entry point)
+└── bundle.txt         # Lists source files for the `build` script
 ```
 
 ## Recommended Workflow
 
-The key feature of this bundler is its idempotent design, which allows for a flexible development cycle.
+This toolset is designed for a smooth, iterative development cycle.
 
-1.  **Initial Build**: Start with your master file (`mygame.rb`) and your source files in the `src/` directory. Run `./bin/build mygame.rb`.
-2.  **Test**: Open the newly generated, timestamped file from the `builds/` directory in TIC-80 and test your game.
-3.  **Iterate**: Make changes to your code in the `src/` files.
-4.  **Rebuild**: Run the build script again.
-    *   To directly update your master file for a quicker feedback loop (recommended for most development), use the `-f` flag.
-        ```sh
-        bin/build -f mygame.rb
-        ```
-    *   To create a versioned snapshot, run the build without flags.
-        ```sh
-        bin/build mygame.rb
-        ```
-5.  **Clean up**: Periodically, run `bin/build cleanup` to remove old builds from the `builds/` directory.
+1.  **Code**: Write your game logic across multiple files in the `src/` directory.
+2.  **Bundle**: Run the `build` script to assemble your source files into a single cartridge. *(Requires TIC-80 Pro)*
+    ```sh
+    # For quick iteration, update your master file directly
+    bin/build -f mygame.lua
+    ```
+3.  **Test**: Open `mygame.lua` in the TIC-80 editor and test your changes. Repeat steps 1-3 as you develop.
+4.  **Create a Versioned Build**: Once you're happy with your changes, create a final, timestamped build.
+    ```sh
+    bin/build mygame.lua
+    ```
+5.  **Make Binaries**: Use the `make` script to export your versioned build for all platforms.
+    ```sh
+    # For TIC-80 Pro users (smaller binaries without sources)
+    bin/make builds/mygame-*.lua
 
-This cycle allows you to stay productive without ever worrying about creating code duplication.
+    # For free TIC-80 users or if you want sources included
+    bin/make -s builds/mygame-*.lua
 
-## How It Works
-
-The build script performs the following steps:
-1.  It detects the language from your master file's extension (e.g., `.lua`, `.rb`).
-2.  It validates the master file. It ensures that the language declared in the `script:` tag matches the file extension.
-3.  It automatically removes any code that was injected by a previous run of the script.
-4.  It parses a `bundle.txt` file in your project root to get an ordered list of source files to include.
-5.  It concatenates the content of each included file.
-6.  It assembles a brand new file in the `builds/` directory, structured as follows:
-    1.  The header from your master file (metadata comments), which **must finish with the `script: <language>` line**
-    2.  The concatenated code from the files listed in `bundle.txt`, wrapped in special markers.
-    3.  The code from your master file itself.
-    4.  The asset sections (`# <TILES>`, `# <SPRITES>`, etc.) from your master file.
+    # Add -z flag to zip the outputs if desired
+    ```
+6.  **Distribute**: Your final, distributable game files are now organized in a new folder inside `dists/`.
+7.  **Cleanup**: Periodically, run the cleanup commands to keep your workspace tidy.
+    ```sh
+    bin/build cleanup
+    bin/make cleanup
+    ```
 
 ## License
 

@@ -36,7 +36,7 @@ A collection of simple, zero-dependency scripts that provide a powerful workflow
     - For the `build` script: Both free and Pro versions work
 4.  Add the following entries to your `.gitignore` file to keep your repository clean:
     ```gitignore
-    # TIC-80 Pro Build Tools output directories
+    # TIC-80 Build Tools output directories
     carts/
     dists/
     ```
@@ -48,7 +48,7 @@ A collection of simple, zero-dependency scripts that provide a powerful workflow
 > [!NOTE]
 > This script requires **TIC-80 Pro** as it works with text-based cartridge formats.
 
-The `bundle` script assembles your source files from the `src/` directory into a single TIC-80 cartridge file.
+The `bundle` script assembles all your source files into a single TIC-80 cartridge file.
 
 **Bundling your Project**
 ```sh
@@ -85,7 +85,7 @@ The `build` script takes a TIC-80 cartridge file (usually a bundled one from `ca
 
 **Building Binaries**
 ```sh
-# Works with both free and Pro versions
+# Works with both free and Pro versions (sources won't be included with Pro version)
 bin/build carts/mygame-*.lua
 
 # Pro version only: include sources in binaries (makes them larger)
@@ -143,7 +143,7 @@ bin/build cleanup
 
 This toolset is designed for a smooth, iterative development cycle.
 
-1.  **Code**: Write your game logic across multiple files in the `src/` directory.
+1.  **Code**: Write your game logic across multiple files and directories.
 2.  **Bundle**: Run the `bundle` script to assemble your source files into a single cartridge. *(Requires TIC-80 Pro)*
     ```sh
     # For quick iteration, update your master file directly

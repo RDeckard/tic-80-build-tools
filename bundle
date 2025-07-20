@@ -90,7 +90,7 @@ class TicBundler
     remove_existing_bundle!
 
     included_files = parse_bundle_file
-    bundled_code = included_files.map { "\n#{@comment_char} --- #{_1} ---\n" + File.read(_1) }.join
+    bundled_code = included_files.map { |file| "\n#{@comment_char} --- #{file} ---\n" + File.read(file) }.join
 
     bundle_block = [
       "#{@comment_char} #{BUNDLE_START_MARKER_BASE}",
@@ -127,12 +127,12 @@ class TicBundler
   end
 
   def find_script_tag_index(lines)
-    lines.index { _1.strip.gsub(/\s+/, ' ') == script_tag_str }
+    lines.index { |line| line.strip.gsub(/\s+/, ' ') == script_tag_str }
   end
 
   def find_asset_start_index(lines)
     regex = /^#{@comment_char} #{ASSET_REGEX_STR}/
-    lines.index { _1.match?(regex) }
+    lines.index { |line| line.match?(regex) }
   end
 
   def validate_header!
@@ -148,8 +148,8 @@ class TicBundler
   def bundled_block_indices
     start_line = "#{@comment_char} #{BUNDLE_START_MARKER_BASE}"
     end_line = "#{@comment_char} #{BUNDLE_END_MARKER_BASE}"
-    start_idx = @lines.index { _1.strip == start_line }
-    end_idx = @lines.index { _1.strip == end_line }
+    start_idx = @lines.index { |line| line.strip == start_line }
+    end_idx = @lines.index { |line| line.strip == end_line }
     [start_idx, end_idx]
   end
 
@@ -199,7 +199,7 @@ class TicBundler
 
     error_exit("'#{BUNDLE_FILE}' contains no valid #include statements.") if included_files.empty?
 
-    duplicates = included_files.select { included_files.count(_1) > 1 }.uniq
+    duplicates = included_files.select { |file| included_files.count(file) > 1 }.uniq
     error_exit("Duplicate entries found in '#{BUNDLE_FILE}': #{duplicates.join(', ')}") unless duplicates.empty?
 
     included_files.each do |file|

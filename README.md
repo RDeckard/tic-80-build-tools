@@ -22,7 +22,7 @@ A collection of simple, zero-dependency scripts that provide a powerful workflow
 -   **Idempotent & Safe**: Scripts are safe to run multiple times and create timestamped outputs by default.
 -   **Easy Cleanup**: Keep your project tidy with `cleanup` commands for both cartridges and builds.
 -   **Convention-based**: Uses a simple `bundle.txt` file to specify which sources to include and in what order.
--   **Zero-dependency**: Just two Ruby scripts. No external gems required.
+-   **Zero-dependency & Broad Compatibility**: Just two Ruby scripts with no external gems required. Works with Ruby 2.6+ found on most systems.
 
 ## Installation
 
@@ -34,6 +34,7 @@ A collection of simple, zero-dependency scripts that provide a powerful workflow
 3.  Ensure you have TIC-80's executable (`tic80`) in your system's PATH for the `build` script to work.
     - For the `bundle` script: **TIC-80 Pro is required**
     - For the `build` script: Both free and Pro versions work
+    - **Ruby compatibility**: Works with system Ruby on macOS (2.6+), Ubuntu/Debian (3.0+), and most Linux distributions
 4.  Add the following entries to your `.gitignore` file to keep your repository clean:
     ```gitignore
     # TIC-80 Build Tools output directories

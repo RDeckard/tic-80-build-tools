@@ -165,7 +165,7 @@ bin/build cleanup
 This toolset is designed for a smooth, iterative development cycle.
 
 1.  **Code**: Write your game logic across multiple files and directories.
-2.  **Configure**: List your source files in `bundle.txt` in the correct dependency order (dependencies first, then files that use them).
+2.  **Include**: List your source files in `bundle.txt` in the correct dependency order (dependencies first, then files that use them).
 3.  **Bundle**: Run the `bundle` script to assemble your source files into a single cartridge. *(Requires TIC-80 Pro)*
     ```sh
     # For quick iteration, update your master file directly

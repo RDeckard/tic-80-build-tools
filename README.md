@@ -22,7 +22,13 @@ A collection of simple, zero-dependency scripts that provide a powerful workflow
 -   **Idempotent & Safe**: Scripts are safe to run multiple times and create timestamped outputs by default.
 -   **Easy Cleanup**: Keep your project tidy with `cleanup` commands for both cartridges and builds.
 -   **Convention-based**: Uses a simple `bundle.txt` file to specify which sources to include and in what order.
--   **Zero-dependency & Broad Compatibility**: Just two Ruby scripts with no external gems required. Works with Ruby 2.6+ found on most systems.
+-   **Zero-dependency & Broad Compatibility**: Just two Ruby scripts with no external dependencies. Works with Ruby 2.6+ already present on most systems.
+
+## Requirements
+
+-   **TIC-80**: Pro version required for `bundle` script, free version works for `build` script
+-   **Ruby 2.6+**: Already installed on macOS, Ubuntu/Debian, and most Linux distributions
+-   **TIC-80 executable** (`tic80`) in your PATH: Required for the `build` script, typically installed automatically with TIC-80 (especially on Debian/Ubuntu when using the `.deb` installer)
 
 ## Installation
 
@@ -31,113 +37,12 @@ A collection of simple, zero-dependency scripts that provide a powerful workflow
     ```sh
     chmod +x bin/bundle bin/build
     ```
-3.  Ensure you have TIC-80's executable (`tic80`) in your system's PATH for the `build` script to work.
-    - For the `bundle` script: **TIC-80 Pro is required**
-    - For the `build` script: Both free and Pro versions work
-    - **Ruby compatibility**: Works with system Ruby on macOS (2.6+), Ubuntu/Debian (3.0+), and most Linux distributions
-4.  Add the following entries to your `.gitignore` file to keep your repository clean:
+3.  Add the following entries to your `.gitignore` file to keep your repository clean:
     ```gitignore
     # TIC-80 Build Tools output directories
     carts/
     dists/
     ```
-
-## Usage
-
-### Using the `bundle` Script
-
-> [!NOTE]
-> This script requires **TIC-80 Pro** as it works with text-based cartridge formats.
-
-The `bundle` script assembles all your source files (listed in `bundle.txt`) into a single TIC-80 cartridge file.
-
-**Bundling your Project**
-```sh
-# Create a new, timestamped cartridge in the carts/ directory
-bin/bundle mygame.lua
-```
-
-> [!TIP]
-> When you first run the script, if `bundle.txt` doesn't exist, it will create a template for you with examples. Make sure to list your files in dependency order (utilities first, main game logic last).
-For a faster development cycle, use the `-f` flag to overwrite the master file directly:
-```sh
-# Overwrite mygame.lua with the bundled code
-bin/bundle -f mygame.lua
-```
-
-**Cleaning up Old Cartridges**
-```sh
-# Remove all but the most recent cartridge from the carts/ directory
-bin/bundle cleanup
-```
-
-**Clearing Bundled Code**
-
-To strip bundled code from a master file, use the `-c` flag:
-```sh
-bin/bundle -c mygame.lua
-```
-
-**Example `bundle.txt`**
-
-```
-# This file lists all the source files to be included in the final build.
-# The bundle script respects the order of inclusion, so make sure to
-# list files with dependencies before the files that use them.
-
-# Add your files here using the #include directive. For example:
-#
-# #include config.lua
-# #include lib/utils.lua
-# #include src/entities/player.lua
-# #include src/main.lua
-```
-
-### Using the `build` Script
-
-> [!NOTE]
-> This script works with both **free and Pro versions** of TIC-80:
-> - **Free version**: Sources are always included in the exported binaries
-> - **Pro version**: Sources are excluded by default for smaller binaries. Use `--with-sources` (`-s`) to include them
-
-The `build` script takes a TIC-80 cartridge file (usually a bundled one from `carts/`) and exports it into distributable binaries for multiple platforms.
-
-**Building Binaries**
-```sh
-# Works with both free and Pro versions (sources won't be included with Pro version)
-bin/build carts/mygame-*.lua
-
-# Pro version only: include sources in binaries (makes them larger)
-bin/build -s carts/mygame-*.lua
-```
-
-**Zipping Binaries**
-
-To compress the exported files, use the `-z` flag. This is useful for sharing.
-```sh
-# Export and zip all binaries
-bin/build -z carts/mygame-*.lua
-
-# Pro version only: export with sources and zip all binaries
-bin/build -sz carts/mygame-*.lua
-```
-
-**Including Sources in Binaries**
-
-With TIC-80 Pro, sources are excluded by default for smaller file sizes. To include sources in the distributed binaries, use the `-s` flag:
-```sh
-# Pro version only: export binaries with sources included
-bin/build -s carts/mygame-*.lua
-
-# Pro version only: combine flags to export with sources and zip everything
-bin/build -sz carts/mygame-*.lua
-```
-
-**Cleaning up Old Builds**
-```sh
-# Remove all but the most recent build from the dists/ directory
-bin/build cleanup
-```
 
 ## Recommended Project Structure
 
@@ -161,38 +66,85 @@ bin/build cleanup
 └── mygame.lua         # Your master TIC-80 file (entry point)
 ```
 
+## Usage
+
+### Using the `bundle` Script
+
+The `bundle` script assembles all your source files (listed in `bundle.txt`) into a single TIC-80 cartridge file.
+
+**Basic Commands**
+```sh
+# Create a new, timestamped cartridge in the carts/ directory
+bin/bundle mygame.lua
+
+# For quick iteration, overwrite the master file directly
+bin/bundle -f mygame.lua
+
+# Clear bundled code from a master file
+bin/bundle -c mygame.lua
+
+# Remove all but the most recent cartridge
+bin/bundle cleanup
+```
+
+> [!TIP]
+> When you first run the script, if `bundle.txt` doesn't exist, it will create a template for you with examples. Make sure to list your files in dependency order (utilities first, main game logic last).
+
+**Example `bundle.txt`**
+
+```
+# This file lists all the source files to be included in the final build.
+# The bundle script respects the order of inclusion, so make sure to
+# list files with dependencies before the files that use them.
+
+# Add your files here using the #include directive. For example:
+#
+# #include config.lua
+# #include lib/utils.lua
+# #include src/entities/player.lua
+# #include src/main.lua
+```
+
+### Using the `build` Script
+
+The `build` script takes a TIC-80 cartridge file (usually a bundled one from `carts/`) and exports it into distributable binaries for multiple platforms.
+
+**Basic Commands**
+```sh
+# Export binaries for all platforms
+bin/build carts/mygame-*.lua
+
+# Pro version: include sources in binaries (makes them larger)
+bin/build -s carts/mygame-*.lua
+
+# Export and zip all binaries
+bin/build -z carts/mygame-*.lua
+
+# Combine flags: export with sources and zip everything
+bin/build -sz carts/mygame-*.lua
+
+# Remove all but the most recent build
+bin/build cleanup
+```
+
+> [!NOTE]
+> With TIC-80 Pro, sources are excluded by default for smaller file sizes. Use `-s` to include them. The free version always includes sources.
+
 ## Recommended Workflow
 
-This toolset is designed for a smooth, iterative development cycle.
+This toolset is designed for a smooth, iterative development cycle:
+
+> [!NOTE]
+> **For TIC-80 free users**: Steps 2, 3, and 5 (bundling workflow) are not available since they require TIC-80 Pro's text-based cartridge format. You can skip directly to step 6 and use `bin/build` with your existing `.tic` cartridge files.
 
 1.  **Code**: Write your game logic across multiple files and directories.
-2.  **Include**: List your source files in `bundle.txt` in the correct dependency order (dependencies first, then files that use them).
-3.  **Bundle**: Run the `bundle` script to assemble your source files into a single cartridge. *(Requires TIC-80 Pro)*
-    ```sh
-    # For quick iteration, update your master file directly
-    bin/bundle -f mygame.lua
-    ```
-4.  **Test**: Open `mygame.lua` in the TIC-80 editor and test your changes. Repeat steps 1-4 as you develop.
-5.  **Create a Versioned Cartridge**: Once you're happy with your changes, create a final, timestamped cartridge.
-    ```sh
-    bin/bundle mygame.lua
-    ```
-6.  **Build Binaries**: Use the `build` script to export your versioned cartridge for all platforms.
-    ```sh
-    # Works with both free and Pro versions
-    bin/build carts/mygame-*.lua
-
-    # Pro version only: include sources (makes binaries larger)
-    bin/build -s carts/mygame-*.lua
-
-    # Add -z flag to zip the outputs if desired
-    ```
-7.  **Distribute**: Your final, distributable game files are now organized in a new folder inside `dists/`.
-8.  **Cleanup**: Periodically, run the cleanup commands to keep your workspace tidy.
-    ```sh
-    bin/bundle cleanup
-    bin/build cleanup
-    ```
+2.  **Configure**: List your source files in `bundle.txt` in dependency order. *(TIC-80 Pro only)*
+3.  **Bundle**: Run `bin/bundle -f mygame.lua` for quick iteration. *(TIC-80 Pro only)*
+4.  **Test**: Open `mygame.lua` in TIC-80 and test your changes. Repeat steps 1-4 as you develop.
+5.  **Create Release**: Run `bin/bundle mygame.lua` for a timestamped cartridge. *(TIC-80 Pro only)*
+6.  **Build Binaries**: Run `bin/build carts/mygame-*.lua` or `bin/build mygame.tic` (add `-z` to zip, `-s` for sources).
+7.  **Distribute**: Your game files are organized in `dists/`.
+8.  **Cleanup**: Periodically run `bin/bundle cleanup` and `bin/build cleanup`.
 
 ## License
 

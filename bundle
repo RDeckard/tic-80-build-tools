@@ -172,8 +172,9 @@ class TicBundler
 
         # Add your files here using the #include directive. For example:
         #
-        # #include src/utils.lua
-        # #include src/player.lua
+        # #include config.lua
+        # #include lib/utils.lua
+        # #include src/entities/player.lua
         # #include src/main.lua
       TEMPLATE
       File.write(BUNDLE_FILE, template_content)

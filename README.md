@@ -160,3 +160,11 @@ This toolset is designed for a smooth, iterative development cycle:
 ## License
 
 This project is licensed under the MIT License.
+
+## Refactor Safety Check
+
+Run the cleanup regression test after changes to `bundle` or `build`:
+
+```sh
+bin/test_cleanup.sh
+```

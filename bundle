@@ -109,14 +109,14 @@ class TicBundler
 
     if @force_overwrite
       write_master(final_content)
-      success_exit("Bundle successful! Master file '#{@master_path}' was overwritten.")
+      success_exit("Successfully bundled. Master file '#{@master_path}' was overwritten.")
     else
       FileUtils.mkdir_p(BUILD_DIR)
       timestamp = Time.now.strftime('%Y-%m-%d-%H%M%S')
       base = File.basename(@master_path, '.*')
       out_path = File.join(BUILD_DIR, "#{base}-#{timestamp}#{File.extname(@master_path)}")
       File.write(out_path, final_content)
-      success_exit("Bundle successful! Output at: #{out_path}")
+      success_exit("Successfully bundled. Output at: #{out_path}")
     end
   end
 
@@ -212,21 +212,43 @@ class TicBundler
 end
 
 # --- MAIN LOGIC ---
+usage = <<~USAGE.strip
+  Usage:
+    #{$PROGRAM_NAME} cleanup
+    #{$PROGRAM_NAME} [-c] <master_file_path>
+    #{$PROGRAM_NAME} [-f] <master_file_path>
+  Use -h or --help for more options.
+USAGE
+
 if ARGV.first == 'cleanup'
+  if ARGV.length > 1
+    error_exit("Unexpected arguments after 'cleanup'.\n#{usage}")
+  end
   last_cart = cleanup_carts
   success_exit("Cleanup complete. Kept most recent cart: #{last_cart}")
 end
 
 options = { clear: false, force_overwrite: false }
 
-OptionParser.new do |opts|
-  opts.banner = "Usage: #{$PROGRAM_NAME} [options] <master_file_path> | cleanup"
+parser = OptionParser.new do |opts|
+  opts.banner = <<~BANNER
+    Bundle multiple source files into a single TIC-80 master file.
+    Inputs are listed via #include lines in bundle.txt (order matters).
+    By default, writes to carts/<master>-<timestamp>.<ext>.
+    Requires: bundle.txt with valid #include lines.
 
-  opts.on('-c', '--clear', 'Clear previously bundled code from the master file.') do
+    Examples:
+      #{$PROGRAM_NAME} src/mygame.lua
+      #{$PROGRAM_NAME} -f src/mygame.lua
+      #{$PROGRAM_NAME} -c src/mygame.lua
+      #{$PROGRAM_NAME} cleanup
+  BANNER
+
+  opts.on('-c', '--clear', 'Remove bundled code from the master file (mutually exclusive with -f).') do
     options[:clear] = true
   end
 
-  opts.on('-f', '--force', 'Force overwrite of the master file.') do
+  opts.on('-f', '--force', 'Overwrite the master file instead of writing to carts/ (mutually exclusive with -c).') do
     options[:force_overwrite] = true
   end
 
@@ -234,15 +256,16 @@ OptionParser.new do |opts|
     puts opts
     exit
   end
-end.parse!
+end
+parser.parse!
 
 if options[:clear] && options[:force_overwrite]
   error_exit("The options '--clear' and '--force' are mutually exclusive.")
 end
 
 master_file_path = ARGV.first
-error_exit("Usage: #{$PROGRAM_NAME} [-f] <master_file_path> | -c <master_file_path> | cleanup") unless master_file_path
-error_exit("Master file not found: #{master_file_path}") unless File.exist?(master_file_path)
+error_exit("Missing <master_file_path>.\n#{usage}") unless master_file_path
+error_exit("Master file not found: #{master_file_path}\n#{usage}") unless File.exist?(master_file_path)
 
 bundler = TicBundler.new(master_file_path, force_overwrite: options[:force_overwrite])
 if options[:clear]

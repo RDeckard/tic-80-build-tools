@@ -132,16 +132,35 @@ class TicMaker
 end
 
 # --- MAIN LOGIC ---
+usage = <<~USAGE.strip
+  Usage:
+    #{$PROGRAM_NAME} cleanup
+    #{$PROGRAM_NAME} [-z] [-s] <path_to_cart_file>
+  Use -h or --help for more options.
+USAGE
+
 if ARGV.first == 'cleanup'
+  if ARGV.length > 1
+    error_exit("Unexpected arguments after 'cleanup'.\n#{usage}")
+  end
   cleanup_dists
 end
 
 options = { zip: false, with_sources: false }
 
-OptionParser.new do |opts|
-  opts.banner = "Usage: #{$0} [options] <path_to_cart_file>"
+parser = OptionParser.new do |opts|
+  opts.banner = <<~BANNER
+    Build TIC-80 exports into dists/<cart>-<timestamp>/ for html, win, linux, mac, rpi.
+    By default, sources are excluded (alone=1) and files are not zipped.
+    Requires: tic80 in PATH. Optional: zip (for -z).
 
-  opts.on('-z', '--zip', 'Zip the output binaries after creation.') do
+    Examples:
+      #{$PROGRAM_NAME} carts/mygame.tic
+      #{$PROGRAM_NAME} -s -z carts/mygame.tic
+      #{$PROGRAM_NAME} cleanup
+  BANNER
+
+  opts.on('-z', '--zip', 'Zip the output artifacts after creation.') do
     options[:zip] = true
   end
 
@@ -153,12 +172,14 @@ OptionParser.new do |opts|
     puts opts
     exit
   end
-end.parse!
+end
+parser.parse!
 
 if ARGV.empty?
-  error_exit("Usage: #{$0} <path_to_cart_file>\nUse -h or --help for more options.")
+  error_exit("Missing <path_to_cart_file>.\n#{usage}")
 end
 
 cart_file_path = ARGV.first
+error_exit("Cart file not found at '#{cart_file_path}'.\n#{usage}") unless File.exist?(cart_file_path)
 maker = TicMaker.new(cart_file_path)
 maker.make!(zip: options[:zip], with_sources: options[:with_sources])

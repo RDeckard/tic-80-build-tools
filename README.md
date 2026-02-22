@@ -71,7 +71,10 @@ A collection of simple, zero-dependency scripts that provide a powerful workflow
 
 ### Using the `bundle` Script
 
-The `bundle` script assembles all your source files (listed in `bundle.txt`) into a single TIC-80 cartridge file.
+The `bundle` script assembles all your source files (listed in `bundle.txt`) into one or more TIC-80 cartridge files.
+It also auto-detects and preloads optional config variants:
+- `config.lua` (base/prod config, optional)
+- `config.<env>.lua` (extra variants, where `<env>` has no dots, e.g. `local`)
 
 **Basic Commands**
 ```sh
@@ -84,12 +87,17 @@ bin/bundle -f mygame.lua
 # Clear bundled code from a master file
 bin/bundle -c mygame.lua
 
-# Remove all but the most recent cartridge
+# Remove old carts, keeping the most recents (one per variant)
 bin/bundle cleanup
 ```
 
+When config variants exist, `bundle` emits one artifact per config:
+- Base: `mygame.lua` (or `carts/mygame-<timestamp>.lua`) with `config.lua` if present
+- Variant: `mygame.local.lua` (or `carts/mygame.local-<timestamp>.lua`) for `config.local.lua`
+
 > [!TIP]
 > When you first run the script, if `bundle.txt` doesn't exist, it will create a template for you with examples. Make sure to list your files in dependency order (utilities first, main game logic last).
+> Keep `config.lua` and `config.<env>.lua` files out of `bundle.txt`; they are preloaded automatically.
 >
 > Note: `-c` and `-f` are mutually exclusive.
 
@@ -102,7 +110,6 @@ bin/bundle cleanup
 
 # Add your files here using the #include directive. For example:
 #
-# #include config.lua
 # #include lib/utils.lua
 # #include src/entities/player.lua
 # #include src/main.lua
@@ -126,7 +133,7 @@ bin/build -z mygame.lua
 # Combine flags: export with sources and zip everything
 bin/build -sz mygame.lua
 
-# Remove all but the most recent build
+# Remove old builds, keeping the most recents (one per variant)
 bin/build cleanup
 ```
 
@@ -142,6 +149,7 @@ This toolset is designed for a smooth, iterative development cycle:
 
 1.  **Code**: Write your game logic across multiple files and directories.
 2.  **Configure**: List your source files in `bundle.txt` in dependency order. *(TIC-80 Pro only)*
+    - Keep config files separate (`config.lua`, `config.local.lua`, etc.); they are auto-detected by `bundle`.
 3.  **Bundle**: Run `bin/bundle -f mygame.lua` for quick iteration. *(TIC-80 Pro only)*
 4.  **Test**: Open `mygame.lua` in TIC-80 and test your changes. Repeat steps 1-4 as you develop.
 5.  **Create Release**: Run `bin/bundle mygame.lua` for a timestamped cartridge. *(TIC-80 Pro only)*

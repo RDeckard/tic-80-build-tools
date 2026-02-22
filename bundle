@@ -24,6 +24,8 @@ LANG_CONFIG = {
 }.freeze
 
 INCLUDE_REGEX = /^\s*#include\s+(.*)\s*$/.freeze
+CONFIG_ENV_REGEX = /\Aconfig\.([A-Za-z0-9_-]+)\.lua\z/.freeze
+CONFIG_BASE_FILE = 'config.lua'
 ASSET_REGEX_STR = '<[A-Z]+>'
 BUNDLE_START_MARKER_BASE = '--- BEGIN BUNDLED CODE ---'
 BUNDLE_END_MARKER_BASE   = '--- END BUNDLED CODE ---'
@@ -45,20 +47,54 @@ def cleanup_carts
     success_exit("Directory '#{BUILD_DIR}' not found. Nothing to clean.")
   end
 
-  cart_files = Dir.glob(File.join(BUILD_DIR, '*')).sort
-  if cart_files.length <= 1
-    msg = "No old carts to clean. At most one cart file exists in '#{BUILD_DIR}'."
-    success_exit(msg)
+  cart_files = Dir.glob(File.join(BUILD_DIR, '*')).select { |path| File.file?(path) }
+  grouped = Hash.new { |hash, key| hash[key] = [] }
+  unmatched = []
+
+  cart_files.each do |path|
+    parsed = parse_timestamped_cart(path)
+    if parsed
+      grouped[parsed[:stem]] << parsed
+    else
+      unmatched << path
+    end
   end
 
-  files_to_delete = cart_files[0...-1]
-  last_cart = cart_files.last
-  files_to_delete.each do |file|
-    File.delete(file)
-    puts "   - Deleted old cart: #{file}"
+  if grouped.empty?
+    success_exit("No timestamped carts found in '#{BUILD_DIR}'. Nothing to clean.")
   end
 
-  return last_cart
+  deleted = []
+  kept = []
+
+  grouped.each_value do |entries|
+    entries.sort_by! { |entry| entry[:timestamp] }
+    keep = entries.last
+    kept << keep[:path]
+    entries[0...-1].each do |entry|
+      File.delete(entry[:path])
+      deleted << entry[:path]
+      puts "   - Deleted old cart: #{entry[:path]}"
+    end
+  end
+
+  unmatched.each do |path|
+    puts "   - Skipped non-timestamped file: #{path}"
+  end
+
+  if deleted.empty?
+    success_exit("No old carts to clean. Kept latest cart per variant (#{kept.length} total).")
+  end
+
+  success_exit("Cleanup complete. Kept latest cart per variant (#{kept.length} total).")
+end
+
+def parse_timestamped_cart(path)
+  filename = File.basename(path)
+  match = filename.match(/\A(.+)-(\d{4}-\d{2}-\d{2}-\d{6})(\.[^.]+)\z/)
+  return nil unless match
+
+  { path: path, stem: match[1], timestamp: match[2] }
 end
 
 class TicBundler
@@ -89,15 +125,6 @@ class TicBundler
     validate_header!
     remove_existing_bundle!
 
-    included_files = parse_bundle_file
-    bundled_code = included_files.map { |file| "\n#{@comment_char} --- #{file} ---\n" + File.read(file) }.join
-
-    bundle_block = [
-      "#{@comment_char} #{BUNDLE_START_MARKER_BASE}",
-      bundled_code,
-      "#{@comment_char} #{BUNDLE_END_MARKER_BASE}"
-    ].join("\n")
-
     assets_index = find_asset_start_index(@lines)
     header_index  = find_script_tag_index(@lines)
 
@@ -105,19 +132,26 @@ class TicBundler
     master_code_section  = @lines[(header_index + 1)...assets_index].join.strip
     assets_section       = @lines[assets_index..-1].join.strip
 
-    final_content = [header_section, bundle_block, master_code_section, assets_section].reject(&:empty?).join("\n\n") + "\n"
+    included_files = parse_bundle_file
+    variants = build_variants(included_files)
+    outputs = []
 
-    if @force_overwrite
-      write_master(final_content)
-      success_exit("Successfully bundled. Master file '#{@master_path}' was overwritten.")
-    else
-      FileUtils.mkdir_p(BUILD_DIR)
-      timestamp = Time.now.strftime('%Y-%m-%d-%H%M%S')
-      base = File.basename(@master_path, '.*')
-      out_path = File.join(BUILD_DIR, "#{base}-#{timestamp}#{File.extname(@master_path)}")
-      File.write(out_path, final_content)
-      success_exit("Successfully bundled. Output at: #{out_path}")
+    variants.each do |variant|
+      bundled_code = variant[:files].map { |file| "\n#{@comment_char} --- #{file} ---\n" + File.read(file) }.join
+
+      bundle_block = [
+        "#{@comment_char} #{BUNDLE_START_MARKER_BASE}",
+        bundled_code,
+        "#{@comment_char} #{BUNDLE_END_MARKER_BASE}"
+      ].join("\n")
+
+      final_content = [header_section, bundle_block, master_code_section, assets_section].reject(&:empty?).join("\n\n") + "\n"
+      output_path = output_path_for(variant[:env])
+      File.write(output_path, final_content)
+      outputs << output_path
     end
+
+    print_build_summary(outputs)
   end
 
   private
@@ -162,6 +196,81 @@ class TicBundler
     File.write(@master_path, content)
   end
 
+  def build_variants(included_files)
+    validate_config_variant_names!
+
+    config_free_files = included_files.reject { |file| config_path?(file) }
+    variants = []
+
+    if File.exist?(CONFIG_BASE_FILE)
+      variants << { env: nil, files: [CONFIG_BASE_FILE] + config_free_files }
+    else
+      variants << { env: nil, files: config_free_files }
+    end
+
+    config_env_files.each do |entry|
+      variants << { env: entry[:env], files: [entry[:file]] + config_free_files }
+    end
+
+    variants
+  end
+
+  def validate_config_variant_names!
+    invalid = Dir.glob('config.*.lua').sort.reject do |path|
+      File.basename(path).match?(CONFIG_ENV_REGEX)
+    end
+    return if invalid.empty?
+
+    names = invalid.map { |path| File.basename(path) }
+    error_exit("Invalid config variant file(s): #{names.join(', ')}. Expected pattern: config.<env>.lua with <env> in [A-Za-z0-9_-]+.")
+  end
+
+  def config_env_files
+    Dir.glob('config.*.lua').sort.filter_map do |path|
+      name = File.basename(path)
+      match = name.match(CONFIG_ENV_REGEX)
+      next nil unless match
+
+      { env: match[1], file: path }
+    end
+  end
+
+  def config_path?(path)
+    normalized = path.strip
+    normalized == CONFIG_BASE_FILE || normalized.match?(CONFIG_ENV_REGEX)
+  end
+
+  def output_path_for(env_name)
+    if @force_overwrite
+      env_name ? add_suffix_to_path(@master_path, env_name) : @master_path
+    else
+      FileUtils.mkdir_p(BUILD_DIR)
+      @build_timestamp ||= Time.now.strftime('%Y-%m-%d-%H%M%S')
+      ext = File.extname(@master_path)
+      stem = File.basename(@master_path, ext)
+      stem = "#{stem}.#{env_name}" if env_name
+      File.join(BUILD_DIR, "#{stem}-#{@build_timestamp}#{ext}")
+    end
+  end
+
+  def add_suffix_to_path(path, suffix)
+    ext = File.extname(path)
+    return "#{path}.#{suffix}" if ext.empty?
+
+    stem = path[0...-ext.length]
+    "#{stem}.#{suffix}#{ext}"
+  end
+
+  def print_build_summary(outputs)
+    if @force_overwrite
+      puts "✅ \e[32mSuccessfully bundled. Overwritten outputs:\e[0m"
+    else
+      puts "✅ \e[32mSuccessfully bundled. Generated outputs:\e[0m"
+    end
+    outputs.each { |path| puts "   - #{path}" }
+    exit 0
+  end
+
   def parse_bundle_file
     unless File.exist?(BUNDLE_FILE)
       puts "✨ '#{BUNDLE_FILE}' not found. Creating a template for you..."
@@ -172,7 +281,6 @@ class TicBundler
 
         # Add your files here using the #include directive. For example:
         #
-        # #include config.lua
         # #include lib/utils.lua
         # #include src/entities/player.lua
         # #include src/main.lua
@@ -202,11 +310,11 @@ class TicBundler
     duplicates = included_files.select { |file| included_files.count(file) > 1 }.uniq
     error_exit("Duplicate entries found in '#{BUNDLE_FILE}': #{duplicates.join(', ')}") unless duplicates.empty?
 
-    included_files.each do |file|
+    included_files.reject { |file| config_path?(file) }.each do |file|
       error_exit("Included file not found: #{file}") unless File.exist?(file)
     end
 
-    puts "   - Found #{included_files.count} files to include."
+    puts "   - Found #{included_files.count} files to include from '#{BUNDLE_FILE}'."
     included_files
   end
 end
@@ -217,6 +325,10 @@ usage = <<~USAGE.strip
     #{$PROGRAM_NAME} cleanup
     #{$PROGRAM_NAME} [-c] <master_file_path>
     #{$PROGRAM_NAME} [-f] <master_file_path>
+  Notes:
+    - config.lua is optional for the base artifact.
+    - Any config.<env>.lua generates an additional <master>.<env> artifact.
+    - <env> must match [A-Za-z0-9_-]+ (no dots).
   Use -h or --help for more options.
 USAGE
 
@@ -234,7 +346,7 @@ parser = OptionParser.new do |opts|
   opts.banner = <<~BANNER
     Bundle multiple source files into a single TIC-80 master file.
     Inputs are listed via #include lines in bundle.txt (order matters).
-    By default, writes to carts/<master>-<timestamp>.<ext>.
+    By default, writes base + config.<env> variants to carts/ with timestamps.
     Requires: bundle.txt with valid #include lines.
 
     Examples:

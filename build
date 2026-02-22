@@ -34,22 +34,54 @@ def cleanup_dists
     success_exit("Directory '#{DIST_DIR}' not found. Nothing to clean.")
   end
 
-  dist_dirs = Dir.glob(File.join(DIST_DIR, '*/')).sort
+  dist_dirs = Dir.glob(File.join(DIST_DIR, '*/'))
+  grouped = Hash.new { |hash, key| hash[key] = [] }
+  unmatched = []
 
-  if dist_dirs.length <= 1
-    msg = "No old builds to clean. At most one build exists in '#{DIST_DIR}'."
-    success_exit(msg)
+  dist_dirs.each do |path|
+    parsed = parse_timestamped_dist(path)
+    if parsed
+      grouped[parsed[:stem]] << parsed
+    else
+      unmatched << path
+    end
   end
 
-  dirs_to_delete = dist_dirs[0...-1]
-  last_dist = dist_dirs.last
-
-  dirs_to_delete.each do |dir|
-    puts "   - Deleting old build: #{File.basename(dir.chomp('/'))}"
-    FileUtils.rm_r(dir)
+  if grouped.empty?
+    success_exit("No timestamped builds found in '#{DIST_DIR}'. Nothing to clean.")
   end
 
-  success_exit("Cleanup complete. Kept most recent build: #{File.basename(last_dist.chomp('/'))}")
+  deleted = []
+  kept = []
+
+  grouped.each_value do |entries|
+    entries.sort_by! { |entry| entry[:timestamp] }
+    keep = entries.last
+    kept << keep[:path]
+    entries[0...-1].each do |entry|
+      puts "   - Deleting old build: #{File.basename(entry[:path].chomp('/'))}"
+      FileUtils.rm_r(entry[:path])
+      deleted << entry[:path]
+    end
+  end
+
+  unmatched.each do |path|
+    puts "   - Skipping non-timestamped build: #{File.basename(path.chomp('/'))}"
+  end
+
+  if deleted.empty?
+    success_exit("No old builds to clean. Kept latest build per variant (#{kept.length} total).")
+  end
+
+  success_exit("Cleanup complete. Kept latest build per variant (#{kept.length} total).")
+end
+
+def parse_timestamped_dist(path)
+  dirname = File.basename(path.chomp('/'))
+  match = dirname.match(/\A(.+)-(\d{4}-\d{2}-\d{2}-\d{6})\z/)
+  return nil unless match
+
+  { path: path, stem: match[1], timestamp: match[2] }
 end
 
 class TicMaker

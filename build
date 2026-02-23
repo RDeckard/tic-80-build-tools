@@ -225,12 +225,13 @@ options = { zip: false, with_sources: false }
 parser = OptionParser.new do |opts|
   opts.banner = <<~BANNER
     Build TIC-80 exports into dists/<cart>-<timestamp>/ for html, win, linux, mac, rpi.
-    By default, sources are excluded (alone=1) and files are not zipped.
+    By default, sources are excluded (alone=1) for TIC-80 Pro projects, and files are not zipped.
     Requires: tic80 in PATH. Optional: zip (for -z).
 
     Examples:
-      #{$PROGRAM_NAME} carts/mygame.tic
-      #{$PROGRAM_NAME} -s -z carts/mygame.tic
+      #{$PROGRAM_NAME} mygame.tic
+      #{$PROGRAM_NAME} carts/mygame.lua
+      #{$PROGRAM_NAME} -s -z mygame.lua
       #{$PROGRAM_NAME} cleanup
   BANNER
 

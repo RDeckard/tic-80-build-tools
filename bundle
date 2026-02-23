@@ -381,13 +381,13 @@ parser = OptionParser.new do |opts|
   opts.banner = <<~BANNER
     Bundle multiple source files into a single TIC-80 master file.
     Inputs are listed via #include lines in bundle.txt (order matters).
-    By default, writes base + config.<env> variants to carts/ with timestamps.
+    By default, writes base + config.<env> optional variants to carts/ with timestamps.
     Requires: bundle.txt with valid #include lines.
 
     Examples:
-      #{$PROGRAM_NAME} src/mygame.lua
-      #{$PROGRAM_NAME} -f src/mygame.lua
-      #{$PROGRAM_NAME} -c src/mygame.lua
+      #{$PROGRAM_NAME} mygame.lua
+      #{$PROGRAM_NAME} -f mygame.lua
+      #{$PROGRAM_NAME} -c mygame.lua
       #{$PROGRAM_NAME} cleanup
   BANNER
 

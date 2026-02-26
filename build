@@ -9,8 +9,16 @@ require 'optparse'
 
 DIST_DIR = 'dists'
 TIC_EXECUTABLE = 'tic80'
+TIMESTAMP_FORMAT = '%Y-%m-%d-%H%M%S'
+TIMESTAMPED_DIST_REGEX = /\A(.+)-(\d{4}-\d{2}-\d{2}-\d{6})\z/.freeze
+EXPORT_TARGETS = {
+  html: '-html',
+  win: '-win',
+  linux: '-linux',
+  mac: '-mac',
+  rpi: '-rpi'
+}.freeze
 
-# --- HELPERS ---
 def error_exit(message)
   puts "💥 \e[31mError: #{message}\e[0m"
   exit 1
@@ -21,149 +29,185 @@ def success_exit(message)
   exit 0
 end
 
-def check_executable(name)
-  Open3.capture3("#{name} --version")
+def executable_available?(name)
+  Open3.capture3(name, '--version')
   true
 rescue Errno::ENOENT
   false
 end
 
-def cleanup_dists
-  puts "🧹 Starting cleanup of '#{DIST_DIR}' directory..."
-  unless Dir.exist?(DIST_DIR)
-    success_exit("Directory '#{DIST_DIR}' not found. Nothing to clean.")
+class DistCleanup
+  def initialize(dir: DIST_DIR)
+    @dir = dir
   end
 
-  dist_dirs = Dir.glob(File.join(DIST_DIR, '*/'))
-  grouped = Hash.new { |hash, key| hash[key] = [] }
-  unmatched = []
+  def call
+    puts "🧹 Starting cleanup of '#{@dir}' directory..."
+    success_exit("Directory '#{@dir}' not found. Nothing to clean.") unless Dir.exist?(@dir)
 
-  dist_dirs.each do |path|
-    parsed = parse_timestamped_dist(path)
-    if parsed
-      grouped[parsed[:stem]] << parsed
-    else
-      unmatched << path
+    grouped, skipped = grouped_timestamped_dirs
+    success_exit("No timestamped builds found in '#{@dir}'. Nothing to clean.") if grouped.empty?
+
+    deleted_count = delete_old_entries(grouped)
+    skipped.each { |path| puts "   - Skipping non-timestamped build: #{File.basename(path.chomp('/'))}" }
+
+    kept_count = grouped.length
+    if deleted_count.zero?
+      success_exit("No old builds to clean. Kept latest build per variant (#{kept_count} total).")
     end
+
+    success_exit("Cleanup complete. Kept latest build per variant (#{kept_count} total).")
   end
 
-  if grouped.empty?
-    success_exit("No timestamped builds found in '#{DIST_DIR}'. Nothing to clean.")
-  end
+  private
 
-  deleted = []
-  kept = []
+  def grouped_timestamped_dirs
+    grouped = Hash.new { |hash, key| hash[key] = [] }
+    skipped = []
 
-  grouped.each_value do |entries|
-    entries.sort_by! { |entry| entry[:timestamp] }
-    keep = entries.last
-    kept << keep[:path]
-    entries[0...-1].each do |entry|
-      puts "   - Deleting old build: #{File.basename(entry[:path].chomp('/'))}"
-      FileUtils.rm_r(entry[:path])
-      deleted << entry[:path]
+    Dir.glob(File.join(@dir, '*/')).sort.each do |path|
+      parsed = parse_timestamped_dist(path)
+      if parsed
+        grouped[parsed[:stem]] << parsed
+      else
+        skipped << path
+      end
     end
+
+    [grouped, skipped]
   end
 
-  unmatched.each do |path|
-    puts "   - Skipping non-timestamped build: #{File.basename(path.chomp('/'))}"
+  def parse_timestamped_dist(path)
+    dirname = File.basename(path.chomp('/'))
+    match = dirname.match(TIMESTAMPED_DIST_REGEX)
+    return nil unless match
+
+    { path: path, stem: match[1], timestamp: match[2] }
   end
 
-  if deleted.empty?
-    success_exit("No old builds to clean. Kept latest build per variant (#{kept.length} total).")
+  def delete_old_entries(grouped)
+    deleted_count = 0
+
+    grouped.each_value do |entries|
+      entries.sort_by! { |entry| entry[:timestamp] }
+      entries[0...-1].each do |entry|
+        puts "   - Deleting old build: #{File.basename(entry[:path].chomp('/'))}"
+        FileUtils.rm_r(entry[:path])
+        deleted_count += 1
+      end
+    end
+
+    deleted_count
   end
-
-  success_exit("Cleanup complete. Kept latest build per variant (#{kept.length} total).")
-end
-
-def parse_timestamped_dist(path)
-  dirname = File.basename(path.chomp('/'))
-  match = dirname.match(/\A(.+)-(\d{4}-\d{2}-\d{2}-\d{6})\z/)
-  return nil unless match
-
-  { path: path, stem: match[1], timestamp: match[2] }
 end
 
 class TicMaker
-  attr_reader :cart_path
-
-  def initialize(cart_path)
+  def initialize(cart_path, tic_executable: TIC_EXECUTABLE)
     error_exit("Cart file not found at '#{cart_path}'.") unless File.exist?(cart_path)
+
     @cart_path = cart_path
+    @tic_executable = tic_executable
   end
 
   def make!(zip: false, with_sources: false)
-    message = "Preparing to make binaries from '#{@cart_path}'"
-    message << ' with sources included' if with_sources
-    message << ' and zip them' if zip
-    puts "🔎 #{message}..."
+    puts "🔎 #{build_intro(zip: zip, with_sources: with_sources)}..."
 
-    error_exit("Could not find '#{TIC_EXECUTABLE}' executable. Please ensure it's in your PATH.") unless check_executable(TIC_EXECUTABLE)
-    error_exit("Could not find 'zip' executable. Please ensure it's in your PATH.") if zip && !check_executable('zip')
+    ensure_dependencies!(zip: zip)
+    output_dir = prepare_output_dir
 
-    base_name = File.basename(@cart_path, '.*')
-    timestamp = Time.now.strftime('%Y-%m-%d-%H%M%S')
-    output_dir = File.join(DIST_DIR, "#{base_name}-#{timestamp}")
-    FileUtils.mkdir_p(output_dir)
-
-    exports = {
-      html: '-html',
-      win: '-win',
-      linux: '-linux',
-      mac: '-mac',
-      rpi: '-rpi'
-    }
-
-    exports.each do |format, suffix|
-      puts "   - Exporting for #{format.to_s.capitalize}..."
-      base_export_path = File.join(output_dir, "#{base_name}#{suffix}")
-
-      alone_option = with_sources ? '' : ' alone=1'
-      cmd = "#{TIC_EXECUTABLE} --cli --fs . --cmd 'load #{@cart_path} & export #{format} #{base_export_path}#{alone_option}'"
-
-      files_before = Dir.glob(File.join(output_dir, '*'))
-      _stdout, stderr, status = Open3.capture3(cmd)
-      files_after = Dir.glob(File.join(output_dir, '*'))
-
-      new_artifacts = files_after - files_before
-
-      if !status.success? || new_artifacts.empty?
-        puts "     \e[31mFailed to export for #{format.to_s.capitalize}.\e[0m"
-        puts "     \e[33mTIC-80 output:\n#{stderr}\e[0m"
-        next
-      end
-
-      puts "     - Created: #{new_artifacts.map { |p| File.basename(p) }.join(', ')}"
-
-      next unless zip
-
-      if new_artifacts.length == 1 && new_artifacts.first.end_with?('.zip')
-        puts "     - Skipping zip for already compressed file."
-        next
-      end
-
-      zip_path = "#{base_export_path}.zip"
-      artifact_basenames = new_artifacts.map { |p| "'#{File.basename(p)}'" }.join(' ')
-
-      zip_cmd = "cd '#{output_dir}' && zip -r '#{File.basename(zip_path)}' #{artifact_basenames}"
-
-      _zip_stdout, zip_stderr, zip_status = Open3.capture3(zip_cmd)
-
-      if zip_status.success?
-        puts "     - Zipped:  #{File.basename(zip_path)}"
-        FileUtils.rm_r(new_artifacts)
-      else
-        puts "     \e[31mFailed to zip artifact(s): #{artifact_basenames}.\e[0m"
-        puts "     \e[33mZip output:\n#{zip_stderr}\e[0m"
-      end
+    EXPORT_TARGETS.each do |format, suffix|
+      export_variant(format: format, suffix: suffix, output_dir: output_dir, zip: zip, with_sources: with_sources)
     end
 
-    action_desc = zip ? 'built and zipped' : 'built'
-    success_exit("Successfully #{action_desc} binaries in: #{output_dir}")
+    action = zip ? 'built and zipped' : 'built'
+    success_exit("Successfully #{action} binaries in: #{output_dir}")
+  end
+
+  private
+
+  def build_intro(zip:, with_sources:)
+    message = "Preparing to make binaries from '#{@cart_path}'"
+    message += ' with sources included' if with_sources
+    message += ' and zip them' if zip
+    message
+  end
+
+  def ensure_dependencies!(zip:)
+    unless executable_available?(@tic_executable)
+      error_exit("Could not find '#{@tic_executable}' executable. Please ensure it's in your PATH.")
+    end
+
+    return unless zip
+    return if executable_available?('zip')
+
+    error_exit("Could not find 'zip' executable. Please ensure it's in your PATH.")
+  end
+
+  def prepare_output_dir
+    base_name = File.basename(@cart_path, '.*')
+    timestamp = Time.now.strftime(TIMESTAMP_FORMAT)
+    output_dir = File.join(DIST_DIR, "#{base_name}-#{timestamp}")
+    FileUtils.mkdir_p(output_dir)
+    output_dir
+  end
+
+  def export_variant(format:, suffix:, output_dir:, zip:, with_sources:)
+    puts "   - Exporting for #{format.to_s.capitalize}..."
+
+    base_name = File.basename(@cart_path, '.*')
+    base_export_path = File.join(output_dir, "#{base_name}#{suffix}")
+    files_before = Dir.glob(File.join(output_dir, '*'))
+
+    _stdout, stderr, status = Open3.capture3(*export_command(format: format, base_export_path: base_export_path, with_sources: with_sources))
+
+    files_after = Dir.glob(File.join(output_dir, '*'))
+    new_artifacts = files_after - files_before
+
+    if !status.success? || new_artifacts.empty?
+      puts "     \e[31mFailed to export for #{format.to_s.capitalize}.\e[0m"
+      puts "     \e[33mTIC-80 output:\n#{stderr}\e[0m"
+      return
+    end
+
+    puts "     - Created: #{new_artifacts.map { |path| File.basename(path) }.join(', ')}"
+    zip_artifacts(output_dir: output_dir, base_export_path: base_export_path, artifacts: new_artifacts) if zip
+  end
+
+  def export_command(format:, base_export_path:, with_sources:)
+    alone_option = with_sources ? '' : ' alone=1'
+
+    [
+      @tic_executable,
+      '--cli',
+      '--fs',
+      '.',
+      '--cmd',
+      "load #{@cart_path} & export #{format} #{base_export_path}#{alone_option}"
+    ]
+  end
+
+  def zip_artifacts(output_dir:, base_export_path:, artifacts:)
+    if artifacts.length == 1 && artifacts.first.end_with?('.zip')
+      puts '     - Skipping zip for already compressed file.'
+      return
+    end
+
+    zip_filename = "#{File.basename(base_export_path)}.zip"
+    artifact_names = artifacts.map { |path| File.basename(path) }
+
+    _stdout, stderr, status = Open3.capture3('zip', '-r', zip_filename, *artifact_names, chdir: output_dir)
+
+    if status.success?
+      puts "     - Zipped:  #{zip_filename}"
+      FileUtils.rm_r(artifacts)
+      return
+    end
+
+    puts "     \e[31mFailed to zip artifact(s): #{artifact_names.join(', ')}.\e[0m"
+    puts "     \e[33mZip output:\n#{stderr}\e[0m"
   end
 end
 
-# --- MAIN LOGIC ---
 usage = <<~USAGE.strip
   Usage:
     #{$PROGRAM_NAME} cleanup
@@ -172,10 +216,8 @@ usage = <<~USAGE.strip
 USAGE
 
 if ARGV.first == 'cleanup'
-  if ARGV.length > 1
-    error_exit("Unexpected arguments after 'cleanup'.\n#{usage}")
-  end
-  cleanup_dists
+  error_exit("Unexpected arguments after 'cleanup'.\n#{usage}") if ARGV.length > 1
+  DistCleanup.new.call
 end
 
 options = { zip: false, with_sources: false }
@@ -207,11 +249,10 @@ parser = OptionParser.new do |opts|
 end
 parser.parse!
 
-if ARGV.empty?
-  error_exit("Missing <path_to_cart_file>.\n#{usage}")
-end
+error_exit("Missing <path_to_cart_file>.\n#{usage}") if ARGV.empty?
 
 cart_file_path = ARGV.first
 error_exit("Cart file not found at '#{cart_file_path}'.\n#{usage}") unless File.exist?(cart_file_path)
+
 maker = TicMaker.new(cart_file_path)
 maker.make!(zip: options[:zip], with_sources: options[:with_sources])

@@ -7,7 +7,8 @@ require 'time'
 require 'optparse'
 
 BUNDLE_FILE = 'bundle.txt'
-BUILD_DIR = 'carts'
+BUNDLE_DIR = 'carts'
+TIMESTAMP_FORMAT = '%Y-%m-%d-%H%M%S'
 
 # TIC-80 Supported Languages Configuration
 # https://github.com/nesbox/TIC-80/wiki/supported-languages
@@ -25,12 +26,14 @@ LANG_CONFIG = {
 
 INCLUDE_REGEX = /^\s*#include\s+(.*)\s*$/.freeze
 CONFIG_ENV_REGEX = /\Aconfig\.([A-Za-z0-9_-]+)\.lua\z/.freeze
+TIMESTAMPED_CART_REGEX = /\A(.+)-(\d{4}-\d{2}-\d{2}-\d{6})(\.[^.]+)\z/.freeze
 CONFIG_BASE_FILE = 'config.lua'
 ASSET_REGEX_STR = '<[A-Z]+>'
 BUNDLE_START_MARKER_BASE = '--- BEGIN BUNDLED CODE ---'
-BUNDLE_END_MARKER_BASE   = '--- END BUNDLED CODE ---'
+BUNDLE_END_MARKER_BASE = '--- END BUNDLED CODE ---'
 
-# --- HELPERS ---
+Variant = Struct.new(:env, :files, keyword_init: true)
+
 def error_exit(message)
   puts "💥 \e[31mError: #{message}\e[0m"
   exit 1
@@ -41,72 +44,84 @@ def success_exit(message)
   exit 0
 end
 
-def cleanup_carts
-  puts "🧹 Starting cleanup of '#{BUILD_DIR}' directory..."
-  unless Dir.exist?(BUILD_DIR)
-    success_exit("Directory '#{BUILD_DIR}' not found. Nothing to clean.")
+class CartCleanup
+  def initialize(dir: BUNDLE_DIR)
+    @dir = dir
   end
 
-  cart_files = Dir.glob(File.join(BUILD_DIR, '*')).select { |path| File.file?(path) }
-  grouped = Hash.new { |hash, key| hash[key] = [] }
-  unmatched = []
+  def call
+    puts "🧹 Starting cleanup of '#{@dir}' directory..."
+    success_exit("Directory '#{@dir}' not found. Nothing to clean.") unless Dir.exist?(@dir)
 
-  cart_files.each do |path|
-    parsed = parse_timestamped_cart(path)
-    if parsed
-      grouped[parsed[:stem]] << parsed
-    else
-      unmatched << path
+    grouped, skipped = grouped_timestamped_carts
+    success_exit("No timestamped carts found in '#{@dir}'. Nothing to clean.") if grouped.empty?
+
+    deleted_count = delete_old_entries(grouped)
+    skipped.each { |path| puts "   - Skipped non-timestamped file: #{path}" }
+
+    kept_count = grouped.length
+    if deleted_count.zero?
+      success_exit("No old carts to clean. Kept latest cart per variant (#{kept_count} total).")
     end
+
+    success_exit("Cleanup complete. Kept latest cart per variant (#{kept_count} total).")
   end
 
-  if grouped.empty?
-    success_exit("No timestamped carts found in '#{BUILD_DIR}'. Nothing to clean.")
-  end
+  private
 
-  deleted = []
-  kept = []
+  def grouped_timestamped_carts
+    grouped = Hash.new { |hash, key| hash[key] = [] }
+    skipped = []
 
-  grouped.each_value do |entries|
-    entries.sort_by! { |entry| entry[:timestamp] }
-    keep = entries.last
-    kept << keep[:path]
-    entries[0...-1].each do |entry|
-      File.delete(entry[:path])
-      deleted << entry[:path]
-      puts "   - Deleted old cart: #{entry[:path]}"
+    Dir.glob(File.join(@dir, '*')).sort.each do |path|
+      next unless File.file?(path)
+
+      parsed = parse_timestamped_cart(path)
+      if parsed
+        grouped[parsed[:stem]] << parsed
+      else
+        skipped << path
+      end
     end
+
+    [grouped, skipped]
   end
 
-  unmatched.each do |path|
-    puts "   - Skipped non-timestamped file: #{path}"
+  def parse_timestamped_cart(path)
+    match = File.basename(path).match(TIMESTAMPED_CART_REGEX)
+    return nil unless match
+
+    { path: path, stem: match[1], timestamp: match[2] }
   end
 
-  if deleted.empty?
-    success_exit("No old carts to clean. Kept latest cart per variant (#{kept.length} total).")
+  def delete_old_entries(grouped)
+    deleted_count = 0
+
+    grouped.each_value do |entries|
+      entries.sort_by! { |entry| entry[:timestamp] }
+      entries[0...-1].each do |entry|
+        File.delete(entry[:path])
+        deleted_count += 1
+        puts "   - Deleted old cart: #{entry[:path]}"
+      end
+    end
+
+    deleted_count
   end
-
-  success_exit("Cleanup complete. Kept latest cart per variant (#{kept.length} total).")
-end
-
-def parse_timestamped_cart(path)
-  filename = File.basename(path)
-  match = filename.match(/\A(.+)-(\d{4}-\d{2}-\d{2}-\d{6})(\.[^.]+)\z/)
-  return nil unless match
-
-  { path: path, stem: match[1], timestamp: match[2] }
 end
 
 class TicBundler
-  attr_reader :master_path, :lang_config, :comment_char
-
   def initialize(master_path, force_overwrite: false)
     @master_path = master_path
-    ext = File.extname(master_path)
-    @lang_config = LANG_CONFIG[ext] || error_exit("Unsupported file type: '#{ext}'. Supported types are: #{LANG_CONFIG.keys.join(', ')}")
-    @comment_char = @lang_config[:comment_char]
     @force_overwrite = force_overwrite
     @lines = File.readlines(master_path)
+    @bundle_timestamp = nil
+
+    ext = File.extname(master_path)
+    @lang_config = LANG_CONFIG.fetch(ext) do
+      error_exit("Unsupported file type: '#{ext}'. Supported types are: #{LANG_CONFIG.keys.join(', ')}")
+    end
+    @comment_char = @lang_config[:comment_char]
   end
 
   def clear_bundle!
@@ -117,44 +132,185 @@ class TicBundler
 
     @lines.slice!(start_idx..end_idx)
     validate_header!
-    write_master(@lines.join)
+    File.write(@master_path, @lines.join)
     success_exit("Successfully cleared bundled code from '#{@master_path}'.")
   end
 
-  def build!
+  def bundle!
     validate_header!
     remove_existing_bundle!
 
-    assets_index = find_asset_start_index(@lines)
-    header_index  = find_script_tag_index(@lines)
-
-    header_section       = @lines[0..header_index].join.strip
-    master_code_section  = @lines[(header_index + 1)...assets_index].join.strip
-    assets_section       = @lines[assets_index..-1].join.strip
-
+    sections = split_master_sections
     included_files = parse_bundle_file
-    variants = build_variants(included_files)
-    outputs = []
+    variants = bundle_variants(included_files)
 
-    variants.each do |variant|
-      bundled_code = variant[:files].map { |file| "\n#{@comment_char} --- #{file} ---\n" + File.read(file) }.join
-
-      bundle_block = [
-        "#{@comment_char} #{BUNDLE_START_MARKER_BASE}",
-        bundled_code,
-        "#{@comment_char} #{BUNDLE_END_MARKER_BASE}"
-      ].join("\n")
-
-      final_content = [header_section, bundle_block, master_code_section, assets_section].reject(&:empty?).join("\n\n") + "\n"
-      output_path = output_path_for(variant[:env])
-      File.write(output_path, final_content)
-      outputs << output_path
+    outputs = variants.map do |variant|
+      output_path = output_path_for(variant.env)
+      File.write(output_path, render_final_content(variant.files, sections))
+      output_path
     end
 
-    print_build_summary(outputs)
+    print_bundle_summary(outputs)
   end
 
   private
+
+  def split_master_sections
+    header_index = find_script_tag_index(@lines)
+    assets_index = find_asset_start_index(@lines) || @lines.length
+
+    {
+      header: @lines[0..header_index].to_a.join.strip,
+      master_code: @lines[(header_index + 1)...assets_index].to_a.join.strip,
+      assets: @lines[assets_index..].to_a.join.strip
+    }
+  end
+
+  def render_final_content(files, sections)
+    bundle_block = render_bundle_block(files)
+
+    [sections[:header], bundle_block, sections[:master_code], sections[:assets]]
+      .reject(&:empty?)
+      .join("\n\n") + "\n"
+  end
+
+  def render_bundle_block(files)
+    bundled_code = files.map do |file|
+      "\n#{@comment_char} --- #{file} ---\n#{File.read(file)}"
+    end.join
+
+    [
+      "#{@comment_char} #{BUNDLE_START_MARKER_BASE}",
+      bundled_code,
+      "#{@comment_char} #{BUNDLE_END_MARKER_BASE}"
+    ].join("\n")
+  end
+
+  def parse_bundle_file
+    ensure_bundle_file!
+    puts "🔎 Parsing '#{BUNDLE_FILE}'..."
+
+    included_files = File.readlines(BUNDLE_FILE, chomp: true).filter_map do |line|
+      parse_include_path(line)
+    end
+
+    error_exit("'#{BUNDLE_FILE}' contains no valid #include statements.") if included_files.empty?
+
+    duplicates = included_files.tally.select { |_file, count| count > 1 }.keys
+    unless duplicates.empty?
+      error_exit("Duplicate entries found in '#{BUNDLE_FILE}': #{duplicates.join(', ')}")
+    end
+
+    validate_included_files!(included_files)
+    puts "   - Found #{included_files.count} files to include from '#{BUNDLE_FILE}'."
+    included_files
+  end
+
+  def ensure_bundle_file!
+    return if File.exist?(BUNDLE_FILE)
+
+    puts "✨ '#{BUNDLE_FILE}' not found. Creating a template for you..."
+    template_content = <<~TEMPLATE
+      # This file lists all the source files to be included in the final bundle.
+      # The bundle script respects the order of inclusion, so make sure to
+      # list files with dependencies before the files that use them.
+
+      # Add your files here using the #include directive. For example:
+      #
+      # #include lib/utils.lua
+      # #include src/entities/player.lua
+      # #include src/main.lua
+    TEMPLATE
+    File.write(BUNDLE_FILE, template_content)
+    success_exit("'#{BUNDLE_FILE}' created. Please add your source files to it and run the bundle again.")
+  end
+
+  def parse_include_path(line)
+    match = line.match(INCLUDE_REGEX)
+    return nil unless match
+
+    unquote(match[1].strip)
+  end
+
+  def unquote(path)
+    quoted = (path.start_with?('"') && path.end_with?('"')) ||
+             (path.start_with?("'") && path.end_with?("'"))
+    quoted ? path[1..-2] : path
+  end
+
+  def validate_included_files!(included_files)
+    included_files.reject { |file| config_path?(file) }.each do |file|
+      error_exit("Included file not found: #{file}") unless File.exist?(file)
+    end
+  end
+
+  def bundle_variants(included_files)
+    validate_config_variant_names!
+
+    non_config_files = included_files.reject { |file| config_path?(file) }
+    variants = [Variant.new(env: nil, files: base_variant_files(non_config_files))]
+
+    config_env_files.each do |entry|
+      variants << Variant.new(env: entry[:env], files: [entry[:file], *non_config_files])
+    end
+
+    variants
+  end
+
+  def base_variant_files(non_config_files)
+    return non_config_files unless File.exist?(CONFIG_BASE_FILE)
+
+    [CONFIG_BASE_FILE, *non_config_files]
+  end
+
+  def validate_config_variant_names!
+    invalid = Dir.glob('config.*.lua').sort.reject do |path|
+      File.basename(path).match?(CONFIG_ENV_REGEX)
+    end
+    return if invalid.empty?
+
+    names = invalid.map { |path| File.basename(path) }
+    error_exit("Invalid config variant file(s): #{names.join(', ')}. Expected pattern: config.<env>.lua with <env> in [A-Za-z0-9_-]+.")
+  end
+
+  def config_env_files
+    Dir.glob('config.*.lua').sort.filter_map do |path|
+      match = File.basename(path).match(CONFIG_ENV_REGEX)
+      next unless match
+
+      { env: match[1], file: path }
+    end
+  end
+
+  def config_path?(path)
+    normalized = path.strip
+    normalized == CONFIG_BASE_FILE || normalized.match?(CONFIG_ENV_REGEX)
+  end
+
+  def output_path_for(env_name)
+    if @force_overwrite
+      return @master_path unless env_name
+
+      return add_suffix_to_path(@master_path, env_name)
+    end
+
+    FileUtils.mkdir_p(BUNDLE_DIR)
+    @bundle_timestamp ||= Time.now.strftime(TIMESTAMP_FORMAT)
+
+    ext = File.extname(@master_path)
+    stem = File.basename(@master_path, ext)
+    stem = "#{stem}.#{env_name}" if env_name
+
+    File.join(BUNDLE_DIR, "#{stem}-#{@bundle_timestamp}#{ext}")
+  end
+
+  def add_suffix_to_path(path, suffix)
+    ext = File.extname(path)
+    return "#{path}.#{suffix}" if ext.empty?
+
+    stem = path.delete_suffix(ext)
+    "#{stem}.#{suffix}#{ext}"
+  end
 
   def script_tag_str
     "#{@comment_char} script: #{@lang_config[:name]}"
@@ -170,156 +326,38 @@ class TicBundler
   end
 
   def validate_header!
-    idx = find_script_tag_index(@lines) || error_exit("Missing 'script:' tag in #{@master_path}.")
-    @lines[0...idx].each_with_index do |line, i|
+    index = find_script_tag_index(@lines) || error_exit("Missing 'script:' tag in #{@master_path}.")
+
+    @lines[0...index].each_with_index do |line, i|
       stripped = line.strip
-      unless stripped.empty? || stripped.start_with?(@comment_char)
-        error_exit("Invalid content on line #{i + 1}. Only comments or blank lines allowed before 'script:' tag.")
-      end
+      next if stripped.empty? || stripped.start_with?(@comment_char)
+
+      error_exit("Invalid content on line #{i + 1}. Only comments or blank lines allowed before 'script:' tag.")
     end
   end
 
   def bundled_block_indices
     start_line = "#{@comment_char} #{BUNDLE_START_MARKER_BASE}"
     end_line = "#{@comment_char} #{BUNDLE_END_MARKER_BASE}"
+
     start_idx = @lines.index { |line| line.strip == start_line }
     end_idx = @lines.index { |line| line.strip == end_line }
     [start_idx, end_idx]
   end
 
   def remove_existing_bundle!
-    s_idx, e_idx = bundled_block_indices
-    @lines.slice!(s_idx..e_idx) if s_idx && e_idx
+    start_idx, end_idx = bundled_block_indices
+    @lines.slice!(start_idx..end_idx) if start_idx && end_idx
   end
 
-  def write_master(content)
-    File.write(@master_path, content)
-  end
-
-  def build_variants(included_files)
-    validate_config_variant_names!
-
-    config_free_files = included_files.reject { |file| config_path?(file) }
-    variants = []
-
-    if File.exist?(CONFIG_BASE_FILE)
-      variants << { env: nil, files: [CONFIG_BASE_FILE] + config_free_files }
-    else
-      variants << { env: nil, files: config_free_files }
-    end
-
-    config_env_files.each do |entry|
-      variants << { env: entry[:env], files: [entry[:file]] + config_free_files }
-    end
-
-    variants
-  end
-
-  def validate_config_variant_names!
-    invalid = Dir.glob('config.*.lua').sort.reject do |path|
-      File.basename(path).match?(CONFIG_ENV_REGEX)
-    end
-    return if invalid.empty?
-
-    names = invalid.map { |path| File.basename(path) }
-    error_exit("Invalid config variant file(s): #{names.join(', ')}. Expected pattern: config.<env>.lua with <env> in [A-Za-z0-9_-]+.")
-  end
-
-  def config_env_files
-    Dir.glob('config.*.lua').sort.filter_map do |path|
-      name = File.basename(path)
-      match = name.match(CONFIG_ENV_REGEX)
-      next nil unless match
-
-      { env: match[1], file: path }
-    end
-  end
-
-  def config_path?(path)
-    normalized = path.strip
-    normalized == CONFIG_BASE_FILE || normalized.match?(CONFIG_ENV_REGEX)
-  end
-
-  def output_path_for(env_name)
-    if @force_overwrite
-      env_name ? add_suffix_to_path(@master_path, env_name) : @master_path
-    else
-      FileUtils.mkdir_p(BUILD_DIR)
-      @build_timestamp ||= Time.now.strftime('%Y-%m-%d-%H%M%S')
-      ext = File.extname(@master_path)
-      stem = File.basename(@master_path, ext)
-      stem = "#{stem}.#{env_name}" if env_name
-      File.join(BUILD_DIR, "#{stem}-#{@build_timestamp}#{ext}")
-    end
-  end
-
-  def add_suffix_to_path(path, suffix)
-    ext = File.extname(path)
-    return "#{path}.#{suffix}" if ext.empty?
-
-    stem = path[0...-ext.length]
-    "#{stem}.#{suffix}#{ext}"
-  end
-
-  def print_build_summary(outputs)
-    if @force_overwrite
-      puts "✅ \e[32mSuccessfully bundled. Overwritten outputs:\e[0m"
-    else
-      puts "✅ \e[32mSuccessfully bundled. Generated outputs:\e[0m"
-    end
+  def print_bundle_summary(outputs)
+    summary = @force_overwrite ? 'Successfully bundled. Overwritten outputs:' : 'Successfully bundled. Generated outputs:'
+    puts "✅ \e[32m#{summary}\e[0m"
     outputs.each { |path| puts "   - #{path}" }
     exit 0
   end
-
-  def parse_bundle_file
-    unless File.exist?(BUNDLE_FILE)
-      puts "✨ '#{BUNDLE_FILE}' not found. Creating a template for you..."
-      template_content = <<~TEMPLATE
-        # This file lists all the source files to be included in the final build.
-        # The build script respects the order of inclusion, so make sure to
-        # list files with dependencies before the files that use them.
-
-        # Add your files here using the #include directive. For example:
-        #
-        # #include lib/utils.lua
-        # #include src/entities/player.lua
-        # #include src/main.lua
-      TEMPLATE
-      File.write(BUNDLE_FILE, template_content)
-      success_exit("'#{BUNDLE_FILE}' created. Please add your source files to it and run the build again.")
-    end
-
-    puts "🔎 Parsing '#{BUNDLE_FILE}'..."
-
-    included_files = File.readlines(BUNDLE_FILE).map do |line|
-      match = line.match(INCLUDE_REGEX)
-      if match
-        path = match[1].strip
-        if (path.start_with?('"') && path.end_with?('"')) || (path.start_with?("'") && path.end_with?("'"))
-          path[1..-2]
-        else
-          path
-        end
-      else
-        nil
-      end
-    end.compact
-
-    error_exit("'#{BUNDLE_FILE}' contains no valid #include statements.") if included_files.empty?
-
-    duplicates = included_files.select { |file| included_files.count(file) > 1 }.uniq
-    error_exit("Duplicate entries found in '#{BUNDLE_FILE}': #{duplicates.join(', ')}") unless duplicates.empty?
-
-    included_files.reject { |file| config_path?(file) }.each do |file|
-      error_exit("Included file not found: #{file}") unless File.exist?(file)
-    end
-
-    puts "   - Found #{included_files.count} files to include from '#{BUNDLE_FILE}'."
-    included_files
-  end
 end
 
-# --- MAIN LOGIC ---
 usage = <<~USAGE.strip
   Usage:
     #{$PROGRAM_NAME} cleanup
@@ -333,11 +371,8 @@ usage = <<~USAGE.strip
 USAGE
 
 if ARGV.first == 'cleanup'
-  if ARGV.length > 1
-    error_exit("Unexpected arguments after 'cleanup'.\n#{usage}")
-  end
-  last_cart = cleanup_carts
-  success_exit("Cleanup complete. Kept most recent cart: #{last_cart}")
+  error_exit("Unexpected arguments after 'cleanup'.\n#{usage}") if ARGV.length > 1
+  CartCleanup.new.call
 end
 
 options = { clear: false, force_overwrite: false }
@@ -380,8 +415,4 @@ error_exit("Missing <master_file_path>.\n#{usage}") unless master_file_path
 error_exit("Master file not found: #{master_file_path}\n#{usage}") unless File.exist?(master_file_path)
 
 bundler = TicBundler.new(master_file_path, force_overwrite: options[:force_overwrite])
-if options[:clear]
-  bundler.clear_bundle!
-else
-  bundler.build!
-end
+options[:clear] ? bundler.clear_bundle! : bundler.bundle!

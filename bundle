@@ -26,6 +26,7 @@ LANG_CONFIG = {
 
 INCLUDE_REGEX = /^\s*#include\s+(.*)\s*$/.freeze
 CONFIG_ENV_REGEX = /\Aconfig\.([A-Za-z0-9_-]+)\.lua\z/.freeze
+MASTER_ENV_REGEX = /\A(.+?)\.([A-Za-z0-9_-]+)\z/.freeze
 TIMESTAMPED_CART_REGEX = /\A(.+)-(\d{4}-\d{2}-\d{2}-\d{6})(\.[^.]+)\z/.freeze
 CONFIG_BASE_FILE = 'config.lua'
 ASSET_REGEX_STR = '<[A-Z]+>'
@@ -122,6 +123,11 @@ class TicBundler
       error_exit("Unsupported file type: '#{ext}'. Supported types are: #{LANG_CONFIG.keys.join(', ')}")
     end
     @comment_char = @lang_config[:comment_char]
+
+    basename = File.basename(@master_path, File.extname(@master_path))
+    match = basename.match(MASTER_ENV_REGEX)
+    @master_env = match ? match[2] : nil
+    @master_stem = match ? match[1] : basename
   end
 
   def clear_bundle!
@@ -289,19 +295,25 @@ class TicBundler
 
   def output_path_for(env_name)
     if @force_overwrite
-      return @master_path unless env_name
+      return output_master_path(@master_stem) unless env_name
+      return @master_path if env_name == @master_env
 
-      return add_suffix_to_path(@master_path, env_name)
+      return add_suffix_to_path(output_master_path(@master_stem), env_name)
     end
 
     FileUtils.mkdir_p(BUNDLE_DIR)
     @bundle_timestamp ||= Time.now.strftime(TIMESTAMP_FORMAT)
 
     ext = File.extname(@master_path)
-    stem = File.basename(@master_path, ext)
+    stem = @master_stem
     stem = "#{stem}.#{env_name}" if env_name
 
     File.join(BUNDLE_DIR, "#{stem}-#{@bundle_timestamp}#{ext}")
+  end
+
+  def output_master_path(stem)
+    ext = File.extname(@master_path)
+    "#{stem}#{ext}"
   end
 
   def add_suffix_to_path(path, suffix)
